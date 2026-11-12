@@ -1,0 +1,68 @@
+name: Prova loppissökning
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  search:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Sök efter publika Facebook-evenemang
+        env:
+          SERPAPI_KEY: ${{ secrets.SERPAPI_KEY }}
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          const key = process.env.SERPAPI_KEY;
+          if (!key) {
+            console.error('GitHub-hemligheten SERPAPI_KEY saknas.');
+            process.exit(1);
+          }
+
+          const queries = [
+            'site:facebook.com/events loppis Norrköping',
+            'site:facebook.com/events bakluckeloppis Norrköping'
+          ];
+          const seen = new Set();
+
+          for (const query of queries) {
+            const endpoint = new URL('https://serpapi.com/search.json');
+            endpoint.search = new URLSearchParams({
+              engine:'google', q:query, gl:'se', hl:'sv', api_key:key
+            });
+            let data;
+            try {
+              const response = await fetch(endpoint,{signal:AbortSignal.timeout(20000)});
+              if (!response.ok) {
+                console.error('SerpApi svarade med HTTP ' + response.status + '.');
+                process.exitCode = 1;
+                break;
+              }
+              data = await response.json();
+              if (data.error) {
+                console.error('SerpApi rapporterade ett fel. Kontrollera nyckeln och kvoten i SerpApis kontrollpanel.');
+                process.exitCode = 1;
+                break;
+              }
+            } catch {
+              console.error('SerpApi-anropet kunde inte slutföras.');
+              process.exitCode = 1;
+              break;
+            }
+
+            console.log('\nSökning: ' + query);
+            for (const result of data.organic_results ?? []) {
+              let url;
+              try { url = new URL(result.link); }
+              catch { continue; }
+              if (url.protocol !== 'https:'
+                || !(url.hostname === 'facebook.com' || url.hostname.endsWith('.facebook.com'))
+                || !url.pathname.startsWith('/events/')) continue;
+              const identity = url.pathname.match(/\/(\d{5,})(?:\/|$)/)?.[1] ?? url.pathname.replace(/\/$/,'');
+              if (seen.has(identity)) continue;
+              seen.add(identity);
+              console.log(JSON.stringify({titel:result.title,länk:url.origin+url.pathname,utdrag:result.snippet}));
+            }
+          }
+          console.log('\nUnika Facebook-träffar: ' + seen.size);
+          JS
