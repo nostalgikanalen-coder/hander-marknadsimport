@@ -2,7 +2,23 @@ import { cert, initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { readFeed, upcomingMarkets } from './calendar.js';
 
-const markets = upcomingMarkets(await readFeed());
+import { upcomingVisitEvents } from './visit-norrkoping.js';
+
+const sources = [
+  ['Östgötamarknader', async () => upcomingMarkets(await readFeed())],
+  ['Visit Norrköping', upcomingVisitEvents]
+];
+const results = await Promise.allSettled(sources.map(([,load]) => load()));
+const markets = results.flatMap((result,index) => {
+  const name = sources[index][0];
+  if (result.status === 'fulfilled') {
+    console.log(name + ':', result.value.length, 'träffar');
+    return result.value;
+  }
+  console.error(name + ':', result.reason.message);
+  process.exitCode = 1;
+  return [];
+});
 if (process.argv.includes('--preview')) {
   console.table(markets.map(({title,startsAt,venueName})=>({title,startsAt,venueName})));
 } else {
