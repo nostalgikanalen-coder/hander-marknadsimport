@@ -15,33 +15,48 @@ export async function readFeed() {
   return response.text();
 }
 
+export const marketWindowMs = 90 * 86400000;
+
 export function upcomingMarkets(content, now = new Date()) {
   if (!/^BEGIN:VCALENDAR\r?\n/.test(content) || !/END:VCALENDAR\s*$/.test(content)) {
     throw new Error('Marknadskalendern returnerade inte giltig iCal.');
   }
-  const until = new Date(now.getTime() + 90 * 86400000);
+  const until = new Date(now.getTime() + marketWindowMs);
+  const events = Object.values(ical.sync.parseICS(content)).filter(event => event.type === 'VEVENT');
+  if (!events.length) throw new Error('Marknadskalendern saknar läsbara evenemang.');
   const markets = [];
-  for (const event of Object.values(ical.sync.parseICS(content))) {
-    if (event.type !== 'VEVENT' || event.status === 'CANCELLED' || event.datetype === 'date'
-      || event.rrule || event.recurrenceid || !event.uid || !event.start) continue;
-    const name = String(event.summary ?? '');
-    const place = String(event.location ?? '');
-    const area = areas.find(({pattern}) => pattern.test(place) || pattern.test(name));
-    if (!area || !/loppis|fyndmässa|marknad/i.test(name) || event.start < now || event.start >= until) continue;
-    const venueName = place.split(',')[0].trim() || (name.match(/bergs slussar|mirum galleria|holmentorget/i)?.[0] ?? '');
-    const type = /julloppis/i.test(name) ? 'Julloppis'
-      : /bakluckeloppis/i.test(name) ? 'Bakluckeloppis'
-      : /loppis|fyndmässa/i.test(name) ? 'Loppis' : 'Marknad';
-    markets.push({
-      id:'ostgotamarknader-' + createHash('sha256').update(event.uid).digest('hex').slice(0,32),
-      title:type + ' i ' + area.municipality,
-      startsAt:event.start,
-      municipality:area.municipality,
-      venueName,
-      category:'loppis',
-      source:'ostgotamarknader',
-      sourceUrl
-    });
+  for (const event of events) {
+    if (event.status === 'CANCELLED' || event.datetype === 'date'
+      || event.recurrenceid || !event.uid || !event.start) continue;
+    const instances = event.rrule
+      ? ical.expandRecurringEvent(event,{from:now,to:until})
+      : [{start:event.start,event}];
+    for (const instance of instances) {
+      const detail = instance.event;
+      if (detail.status === 'CANCELLED' || instance.isFullDay
+        || instance.start < now || instance.start >= until) continue;
+      const name = String(instance.summary || event.summary || '');
+      const place = String(detail.location ?? event.location ?? '');
+      const area = areas.find(({pattern}) => pattern.test(place) || pattern.test(name));
+      if (!area || !/loppis|fyndmässa|marknad/i.test(name)) continue;
+      const venueName = place.split(',')[0].trim() || (name.match(/bergs slussar|mirum galleria|holmentorget/i)?.[0] ?? '');
+      const type = /julloppis/i.test(name) ? 'Julloppis'
+        : /bakluckeloppis/i.test(name) ? 'Bakluckeloppis'
+        : /loppis|fyndmässa/i.test(name) ? 'Loppis' : 'Marknad';
+      const recurrence = detail.recurrenceid || instance.start;
+      const key = event.rrule ? event.uid + '|' + recurrence.toISOString() : event.uid;
+      markets.push({
+        id:'ostgotamarknader-' + createHash('sha256').update(key).digest('hex').slice(0,32),
+        title:type + ' i ' + area.municipality,
+        startsAt:instance.start,
+        municipality:area.municipality,
+        venueName,
+        category:'loppis',
+        source:'ostgotamarknader',
+        sourceUrl,
+        recurringMarket:Boolean(event.rrule)
+      });
+    }
   }
   return markets.sort((a,b)=>a.startsAt-b.startsAt);
 }

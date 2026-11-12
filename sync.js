@@ -1,21 +1,26 @@
 import { cert, initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
-import { readFeed, upcomingMarkets } from './calendar.js';
+import { readFeed, upcomingMarkets, marketWindowMs } from './calendar.js';
 
 import { upcomingVisitEvents } from './visit-norrkoping.js';
 import { secondhandPlaces } from './secondhand.js';
+import { matchMarketDuplicates } from './market-duplicates.js';
+
+const now = new Date();
 
 const sources = [
-  ['Östgötamarknader', 'events', async () => upcomingMarkets(await readFeed())],
+  ['Östgötamarknader', 'events', async () => upcomingMarkets(await readFeed(),now)],
   ['Visit Norrköping', 'events', upcomingVisitEvents],
   ['Second hand i Norrköping', 'places', secondhandPlaces]
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
+const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
+console.log('Matchande loppisdubbletter:',duplicates.size);
 const records = results.flatMap((result,index) => {
   const [name,target] = sources[index];
   if (result.status === 'fulfilled') {
     console.log(name + ':', result.value.length, 'träffar');
-    return result.value.map(entry => ({target,entry}));
+    return result.value.filter(entry => !duplicates.has(entry.id)).map(entry => ({target,entry}));
   }
   console.error(name + ':', result.reason.message);
   process.exitCode = 1;
@@ -45,6 +50,29 @@ if (process.argv.includes('--preview')) {
       return updated;
     });
     for (const target of written) counts[target]++;
+  }
+  const staleIds = new Set(duplicates.keys());
+  if (results[0].status === 'fulfilled') {
+    const currentIds = new Set(results[0].value.map(event=>event.id));
+    const future = await db.collection('events').where('startsAt','>=',now)
+      .where('startsAt','<',new Date(now.getTime()+marketWindowMs)).get();
+    for (const record of future.docs) {
+      const event = record.data();
+      if (event.source === 'ostgotamarknader' && event.recurringMarket && !currentIds.has(record.id)) staleIds.add(record.id);
+    }
+  }
+  const removals = [...staleIds];
+  for (let offset=0; offset<removals.length; offset+=100) {
+    const refs = removals.slice(offset,offset+100).map(id=>db.collection('events').doc(id));
+    await db.runTransaction(async transaction => {
+      for (const record of await transaction.getAll(...refs)) {
+        const item = record.data();
+        if (item && !item.importLocked && !item.hidden
+          && (item.source === 'visit-norrkoping' || (item.source === 'ostgotamarknader' && item.recurringMarket))) {
+          transaction.delete(record.ref);
+        }
+      }
+    });
   }
   console.log('Importerade evenemang:',counts.events);
   console.log('Importerade platser:',counts.places);
