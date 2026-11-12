@@ -79,8 +79,17 @@ export async function upcomingVisitEvents(now = new Date(), request = fetch) {
     return response.text();
   }
   const links = new Map();
-  for (let page=1; page<=3; page++) {
-    const results = listEvents(await read(page === 1 ? calendar : calendar + '?page=' + page));
+  const maxPages = 6;
+  for (let page=1; page<=maxPages; page++) {
+    let html;
+    try {
+      html = await read(page === 1 ? calendar : calendar + '?page=' + page);
+    } catch (error) {
+      if (page === 1) throw error;
+      console.warn('Visit Norrköping: avbröt sidläsning vid sida',page,error.message);
+      break;
+    }
+    const results = listEvents(html);
     if (!results.size) {
       if (page === 1) throw new Error('Visit Norrköpings kalenderformat kunde inte läsas.');
       break;
@@ -90,8 +99,9 @@ export async function upcomingVisitEvents(now = new Date(), request = fetch) {
   const events = [];
   const entries = [...links];
   let failed = 0;
-  for (let i=0; i<entries.length; i+=3) {
-    const results = await Promise.allSettled(entries.slice(i,i+3).map(async ([url,tags]) => parseEvent(await read(url),url,tags,now)));
+  const parallelRequests = 5;
+  for (let i=0; i<entries.length; i+=parallelRequests) {
+    const results = await Promise.allSettled(entries.slice(i,i+parallelRequests).map(async ([url,tags]) => parseEvent(await read(url),url,tags,now)));
     for (const result of results) {
       if (result.status === 'fulfilled') events.push(...result.value);
       else failed++;
