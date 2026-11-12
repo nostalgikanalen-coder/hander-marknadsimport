@@ -27,21 +27,23 @@ function monthNumber(name) {
   return index === undefined ? 0 : index+1;
 }
 
-export function candidateFromResult(result, today, limit) {
+export function candidateFromResult(result, today, limit, reject = () => {}) {
+  const skip = reason => { reject(reason); return null; };
   let url;
-  try { url = new URL(result.link); } catch { return null; }
+  try { url = new URL(result.link); } catch { return skip('saknar användbar länk'); }
   const host = url.hostname.toLowerCase().replace(/^www\./,'');
   if (url.protocol !== 'https:' || !host.includes('.') || url.username || url.password
-    || excludedHosts.some(domain=>host === domain || host.endsWith('.'+domain))) return null;
+    || excludedHosts.some(domain=>host === domain || host.endsWith('.'+domain))) return skip('länken är utanför tillåtna källor');
   const facebook = host === 'facebook.com' || host.endsWith('.facebook.com');
   const facebookId = facebook ? url.pathname.match(/^\/events\/(?:[^/]+\/)*(\d{5,})\/?$/)?.[1] : null;
-  if (facebook && !facebookId) return null;
+  if (facebook && !facebookId) return skip('länken går inte till ett Facebook-evenemang');
   const title = String(result.title ?? '').trim().slice(0,160);
   const snippet = String(result.snippet ?? '').split(/suggested events|föreslagna evenemang/i)[0];
   const context = title + ' ' + snippet;
-  if (!eventKind.test(title) || !localArea.test(context)
-    || /\btrosa\b|\binställ[dt]\b|\buppskjut[et]n?\b/i.test(context)) return null;
-  if (/\d{1,2}\s*[–—-]\s*\d{1,2}\s+[a-zåäö]{3,}/i.test(context)) return null;
+  if (!eventKind.test(title)) return skip('titeln anger ingen loppis eller marknad');
+  if (!localArea.test(context) || /\btrosa\b/i.test(context)) return skip('platsen kunde inte bekräftas i Norrköping');
+  if (/\binställ[dt]\b|\buppskjut[et]n?\b/i.test(context)) return skip('verkar vara inställt eller uppskjutet');
+  if (/\d{1,2}\s*[–—-]\s*\d{1,2}\s+[a-zåäö]{3,}/i.test(context)) return skip('flera dagar i samma datumintervall');
   const dates = new Set();
   for (const [,day,month,year] of context.matchAll(/\b(\d{1,2})\s+([a-zåäö]{3,9})\.?\s+(20\d{2})\b/gi)) {
     const value = makeDay(Number(year),monthNumber(month),Number(day));
@@ -59,9 +61,11 @@ export function candidateFromResult(result, today, limit) {
     const value = makeDay(Number(year),Number(month),Number(day));
     if (value) dates.add(value);
   }
-  if (dates.size !== 1) return null;
+  if (!dates.size) return skip('saknar ett läsbart datum med år');
+  if (dates.size > 1) return skip('flera möjliga datum');
   const [day] = dates;
-  if (day < today || day > limit) return null;
+  if (day < today) return skip('datumet har passerat: '+day);
+  if (day > limit) return skip('datumet ligger längre än 90 dagar fram: '+day);
   if (facebookId) return {title,day,url:'https://www.facebook.com/events/'+facebookId+'/'};
   url.hash = '';
   for (const key of [...url.searchParams.keys()]) {
@@ -70,7 +74,7 @@ export function candidateFromResult(result, today, limit) {
   return {title,day,url:url.href};
 }
 
-export async function searchCandidates(key, now = new Date(), request = fetch) {
+export async function searchCandidates(key, now = new Date(), request = fetch, preview = false) {
   const today = stockholmDay.format(now);
   const limit = stockholmDay.format(new Date(now.getTime()+expiryDays*86400000));
   const found = new Map();
@@ -85,9 +89,18 @@ export async function searchCandidates(key, now = new Date(), request = fetch) {
     const payload = await response.json();
     if (payload.error) throw new Error('Serper rapporterade ett fel.');
     const results = Array.isArray(payload.organic) ? payload.organic : [];
-    const accepted = results.map(result=>candidateFromResult(result,today,limit)).filter(Boolean);
+    const skipped = [];
+    const accepted = results.map(result=>candidateFromResult(result,today,limit,reason=>{
+      skipped.push({reason,title:String(result.title ?? '').slice(0,160),snippet:String(result.snippet ?? '').slice(0,240)});
+    })).filter(Boolean);
     for (const entry of accepted) found.set(entry.url+'|'+entry.day,entry);
     console.log('Sökning:',query,'| Träffar:',results.length,'| Klarade filtret:',accepted.length);
+    if (preview && skipped.length) {
+      const counts = new Map();
+      for (const {reason} of skipped) counts.set(reason,(counts.get(reason) ?? 0)+1);
+      console.log('Bortsorterade:',JSON.stringify(Object.fromEntries(counts)));
+      for (const item of skipped.slice(0,3)) console.log('Exempel:',JSON.stringify(item));
+    }
   }
   return [...found.values()];
 }
@@ -95,10 +108,11 @@ export async function searchCandidates(key, now = new Date(), request = fetch) {
 async function main() {
   const key = process.env.SERPER_KEY?.trim();
   if (!key) throw new Error('GitHub-hemligheten SERPER_KEY eller SERPAPI_KEY saknas.');
-  const candidates = await searchCandidates(key);
+  const preview = process.argv.includes('--preview');
+  const candidates = await searchCandidates(key,new Date(),fetch,preview);
   console.log('Loppiskandidater med framtida datum:',candidates.length);
   for (const candidate of candidates) console.log(JSON.stringify(candidate));
-  if (process.argv.includes('--preview') || !candidates.length) return;
+  if (preview || !candidates.length) return;
 
   const {createHash} = await import('node:crypto');
   const {cert,initializeApp} = await import('firebase-admin/app');
