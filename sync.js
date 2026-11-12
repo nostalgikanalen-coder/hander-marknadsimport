@@ -4,6 +4,7 @@ import { readFeed, upcomingMarkets, marketWindowMs } from './calendar.js';
 
 import { upcomingVisitEvents } from './visit-norrkoping.js';
 import { secondhandPlaces } from './secondhand.js';
+import { linkopingChristmasMarkets } from './linkoping-julmarknader.js';
 import { matchMarketDuplicates } from './market-duplicates.js';
 
 const now = new Date();
@@ -11,7 +12,8 @@ const now = new Date();
 const sources = [
   ['Östgötamarknader', 'events', async () => upcomingMarkets(await readFeed(),now), 'ostgotamarknader'],
   ['Visit Norrköping', 'events', upcomingVisitEvents, 'visit-norrkoping'],
-  ['Second hand i Norrköping', 'places', secondhandPlaces, 'secondhand']
+  ['Second hand i Norrköping', 'places', secondhandPlaces, 'secondhand'],
+  ['Julmarknader i Linköping', 'events', linkopingChristmasMarkets, 'linkoping-julmarknader']
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
