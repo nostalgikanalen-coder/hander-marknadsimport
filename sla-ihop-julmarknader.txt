@@ -1,0 +1,104 @@
+name: Slå ihop julmarknadskategorier
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: Genomför sammanslagningen
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: marknadsimport
+  cancel-in-progress: false
+jobs:
+  merge:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - name: Kontrollera och slå ihop kategorier
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          APPLY: ${{ inputs.apply }}
+        run: |
+          node --input-type=module <<'JS'
+          import { cert, initializeApp } from 'firebase-admin/app';
+          import { getFirestore } from 'firebase-admin/firestore';
+
+          const projectId = 'hander-ostergotland';
+          if (!process.env.FIREBASE_SERVICE_ACCOUNT) throw new Error('FIREBASE_SERVICE_ACCOUNT saknas.');
+          const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+          if (account.project_id !== projectId) throw new Error('Tjänstkontot tillhör fel projekt.');
+          const db = getFirestore(initializeApp({projectId,credential:cert(account)}));
+          const apply = process.env.APPLY === 'true';
+          const target = 'julmarknad';
+          const category = db.collection('categories').doc(target);
+          const images = db.collection('categoryImages');
+          const catalog = await db.collection('categories').get();
+          const matches = value => typeof value === 'string' && /^julmarknader?$/i.test(value.trim());
+          const aliases = new Set(['julmarknader']);
+          for (const record of catalog.docs) {
+            if (record.id !== target && matches(record.data().label)) aliases.add(record.id);
+          }
+          const plans = [];
+          const targetImage = await images.doc(target).get();
+          const imageOptions = [];
+          for (const id of [...aliases].sort()) {
+            const image = await images.doc(id).get();
+            if (image.exists) imageOptions.push(id);
+            for (const name of ['events','places','eventTips']) {
+              const rows = await db.collection(name).where('category','==',id).get();
+              if (rows.size) plans.push({id,name,refs:rows.docs.map(row=>row.ref)});
+            }
+          }
+          const destination = catalog.docs.find(record=>record.id === target);
+          const aliasesInCatalog = catalog.docs.filter(record=>aliases.has(record.id) && record.data().archived !== true);
+          if (!destination && !aliasesInCatalog.length && !plans.length && !imageOptions.length) {
+            console.log('Inga julmarknadskategorier hittades.');
+            process.exit(0);
+          }
+          console.log(apply ? 'Genomför sammanslagning' : 'Förhandsvisning');
+          console.log('Målkategori: Julmarknader ('+target+')');
+          console.log('Dubblett-ID:', [...aliases].join(', '));
+          for (const {id,name,refs} of plans) console.log(name, id, '→', target, refs.length, 'poster');
+          const copiedImage = !targetImage.exists ? imageOptions[0] : undefined;
+          console.log('Bild:',targetImage.exists ? 'befintlig bild behålls' : copiedImage ? 'kopieras från '+copiedImage : 'ingen bild hittades');
+          if (!apply) process.exit(0);
+
+          const scope = [destination,...aliasesInCatalog].some(record=>['places','both'].includes(record?.data()?.scope))
+            || plans.some(plan=>plan.name==='places') ? 'both' : 'events';
+          await category.set({label:'Julmarknader',scope,archived:false},{merge:true});
+          if (copiedImage) {
+            const origin = images.doc(copiedImage);
+            await db.runTransaction(async tx => {
+              const [current,source] = await tx.getAll(images.doc(target),origin);
+              if (!current.exists && source.exists) tx.create(images.doc(target),source.data());
+            });
+          }
+
+          let moved = 0;
+          for (const {id,refs} of plans) {
+            for (let offset=0; offset<refs.length; offset+=100) {
+              const group = refs.slice(offset,offset+100);
+              moved += await db.runTransaction(async tx => {
+                const current = await tx.getAll(...group);
+                let count = 0;
+                for (const record of current) {
+                  if (record.data()?.category !== id) continue;
+                  tx.update(record.ref,{category:target});
+                  count++;
+                }
+                return count;
+              });
+            }
+          }
+          const archive = db.batch();
+          for (const record of aliasesInCatalog) archive.update(record.ref,{archived:true});
+          if (aliasesInCatalog.length) await archive.commit();
+          console.log('Flyttade poster:',moved);
+          JS
