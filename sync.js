@@ -29,13 +29,23 @@ if (process.argv.includes('--preview')) {
   const projectId = 'hander-ostergotland';
   if (account.project_id !== projectId) throw new Error('Tjänstkontot tillhör fel projekt.');
   const db = getFirestore(initializeApp({projectId,credential:cert(account)}));
-  for (let offset=0; offset<records.length; offset+=400) {
-    const batch = db.batch();
-    for (const {target,entry:{id,...entry}} of records.slice(offset,offset+400)) {
-      batch.set(db.collection(target).doc(id),{...entry,updatedAt:FieldValue.serverTimestamp()},{merge:true});
-    }
-    await batch.commit();
+  const counts = {events:0,places:0};
+  for (let offset=0; offset<records.length; offset+=100) {
+    const group = records.slice(offset,offset+100);
+    const references = group.map(({target,entry})=>db.collection(target).doc(entry.id));
+    const written = await db.runTransaction(async transaction => {
+      const existing = await transaction.getAll(...references);
+      const updated = [];
+      for (const [index,{target,entry:{id,...entry}}] of group.entries()) {
+        const current = existing[index].data();
+        if (current?.importLocked === true || current?.hidden === true) continue;
+        transaction.set(references[index],{...entry,updatedAt:FieldValue.serverTimestamp()},{merge:true});
+        updated.push(target);
+      }
+      return updated;
+    });
+    for (const target of written) counts[target]++;
   }
-  console.log('Importerade evenemang:',records.filter(({target})=>target==='events').length);
-  console.log('Importerade platser:',records.filter(({target})=>target==='places').length);
+  console.log('Importerade evenemang:',counts.events);
+  console.log('Importerade platser:',counts.places);
 }
