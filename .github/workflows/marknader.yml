@@ -1,0 +1,23 @@
+name: Importera loppisar
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '25 4 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: marknadsimport
+  cancel-in-progress: false
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - run: node sync.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
