@@ -63,7 +63,7 @@ export function parseEvent(html, url, tags, now = new Date(), christmas = false)
     && !/\b60[1-6]\s?\d{2}\b/.test(address)) return [];
   const categories = [[/loppis|marknad/i,'loppis'],[/musik/i,'musik'],[/familj/i,'familj'],
     [/sport|idrott/i,'sport'],[/mat/i,'mat'],[/teater|konst|museum|utställning|föreläsning/i,'kultur']];
-  const category = christmas ? 'loppis' : categories.find(([pattern]) => pattern.test(tags))?.[1] ?? 'annat';
+  const category = christmas || /julmarknad/i.test(title) ? 'julmarknad' : categories.find(([pattern]) => pattern.test(tags))?.[1] ?? 'annat';
   const occasions = html.split('class="vn-object-page__occasion-item"').slice(1);
   const events = new Map();
   for (const occasion of occasions) {

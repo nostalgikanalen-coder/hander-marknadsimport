@@ -26,6 +26,26 @@ const records = results.flatMap((result,index) => {
   process.exitCode = 1;
   return [];
 });
+async function resolveChristmasCategory(db) {
+  const collection = db.collection('categories');
+  const catalog = await collection.get();
+  const canonical = catalog.docs.find(record=>record.id === 'julmarknad');
+  if (canonical) return canonical.id;
+  const existing = catalog.docs.find(record => {
+    const {label,scope,archived} = record.data();
+    return !archived && ['events','both'].includes(scope)
+      && typeof label === 'string' && /^julmarknader?$/i.test(label.trim());
+  });
+  if (existing) return existing.id;
+  const reference = collection.doc('julmarknad');
+  await db.runTransaction(async transaction => {
+    if (!(await transaction.get(reference)).exists) {
+      transaction.create(reference,{label:'Julmarknader',scope:'events'});
+    }
+  });
+  return reference.id;
+}
+
 async function writeImportStatus(db, writeFailed = false) {
   const batch = db.batch();
   for (const [index,[name,,,id]] of sources.entries()) {
@@ -48,6 +68,12 @@ if (process.argv.includes('--preview')) {
   if (account.project_id !== projectId) throw new Error('Tjänstkontot tillhör fel projekt.');
   const db = getFirestore(initializeApp({projectId,credential:cert(account)}));
   try {
+    if (records.some(({entry}) => entry.category === 'julmarknad')) {
+      const category = await resolveChristmasCategory(db);
+      for (const {entry} of records) {
+        if (entry.category === 'julmarknad') entry.category = category;
+      }
+    }
     const counts = {events:0,places:0};
     for (let offset=0; offset<records.length; offset+=100) {
       const group = records.slice(offset,offset+100);
