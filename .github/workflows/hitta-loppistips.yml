@@ -1,0 +1,36 @@
+name: Hitta nya loppistips
+on:
+  workflow_dispatch:
+    inputs:
+      preview:
+        description: Visa träffar utan att spara tips
+        type: boolean
+        default: true
+  schedule:
+    - cron: '37 5 * * 2'
+permissions:
+  contents: read
+concurrency:
+  group: loppistips
+  cancel-in-progress: false
+jobs:
+  search:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - run: npm ci --ignore-scripts
+      - name: Hitta och granska loppiskandidater
+        env:
+          SERPER_KEY: ${{ secrets.SERPER_KEY || secrets.SERPAPI_KEY }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PREVIEW: ${{ github.event_name == 'workflow_dispatch' && inputs.preview }}
+        run: |
+          if [ "$PREVIEW" = true ]; then
+            node loppistips.js --preview
+          else
+            node loppistips.js
+          fi
