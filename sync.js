@@ -7,6 +7,7 @@ import { secondhandPlaces } from './secondhand.js';
 import { countyChristmasMarkets } from './ostergotland-julmarknader.js';
 import { linkopingChristmasMarkets } from './linkoping-julmarknader.js';
 import { matchMarketDuplicates } from './market-duplicates.js';
+import { upcomingArbisConcerts, matchArbisDuplicates } from './arbis.js';
 
 const now = new Date();
 
@@ -15,11 +16,16 @@ const sources = [
   ['Visit Norrköping', 'events', upcomingVisitEvents, 'visit-norrkoping'],
   ['Second hand i Norrköping', 'places', secondhandPlaces, 'secondhand'],
   ['Julmarknader i Linköping', 'events', linkopingChristmasMarkets, 'linkoping-julmarknader'],
-  ['Julmarknader i Östergötland', 'events', () => countyChristmasMarkets(now), 'ostergotland-julmarknader']
+  ['Julmarknader i Östergötland', 'events', () => countyChristmasMarkets(now), 'ostergotland-julmarknader'],
+  ['Arbis', 'events', () => upcomingArbisConcerts(now), 'arbis']
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
 console.log('Matchande loppisdubbletter:',duplicates.size);
+const arbisResult = results[sources.findIndex(([, , , id])=>id==='arbis')];
+const arbisDuplicates = matchArbisDuplicates(arbisResult.value ?? [],results[1].value ?? []);
+console.log('Matchande Arbis-dubbletter:',arbisDuplicates.size);
+for (const [id,primary] of arbisDuplicates) duplicates.set(id,primary);
 const records = results.flatMap((result,index) => {
   const [name,target] = sources[index];
   if (result.status === 'fulfilled') {
@@ -78,9 +84,19 @@ if (process.argv.includes('--preview')) {
         if (entry.category === 'julmarknad') entry.category = category;
       }
     }
+    const protectedConcerts = new Set();
+    if (arbisDuplicates.size) {
+      const refs = [...arbisDuplicates.keys()].map(id=>db.collection('events').doc(id));
+      const current = await db.getAll(...refs);
+      for (const record of current) {
+        const entry = record.data();
+        if (entry?.importLocked || entry?.hidden) protectedConcerts.add(arbisDuplicates.get(record.id));
+      }
+    }
+    const writable = records.filter(({entry})=>!protectedConcerts.has(entry.id));
     const counts = {events:0,places:0};
-    for (let offset=0; offset<records.length; offset+=100) {
-      const group = records.slice(offset,offset+100);
+    for (let offset=0; offset<writable.length; offset+=100) {
+      const group = writable.slice(offset,offset+100);
       const references = group.map(({target,entry})=>db.collection(target).doc(entry.id));
       const written = await db.runTransaction(async transaction => {
         const existing = await transaction.getAll(...references);
