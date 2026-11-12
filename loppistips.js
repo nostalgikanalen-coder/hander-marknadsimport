@@ -3,13 +3,15 @@ import { pathToFileURL } from 'node:url';
 const months = 'januari februari mars april maj juni juli augusti september oktober november december'.split(' ');
 const shortMonths = 'jan feb mar apr maj jun jul aug sep okt nov dec'.split(' ');
 const englishMonths = 'january february march april may june july august september october november december'.split(' ');
-const allowedHosts = ['facebook.com','hyresbostader.se','nfk.info'];
 const queries = [
-  'site:facebook.com/events loppis Norrköping',
-  'site:facebook.com/events ("Hyresbostäder Ljura" OR "Loppis i Ljura") Norrköping',
-  '(site:nfk.info OR site:facebook.com/events) "Norrköpings Fältrittklubb" loppis',
-  '"Garaget" "loppis" "Norra Promenaden" Norrköping'
+  'loppis OR bakluckeloppis Norrköping kommande datum',
+  'loppis OR bakluckeloppis (Krokek OR Kolmården OR Vikbolandet OR Skärblacka OR Åby)',
+  'marknad OR julmarknad OR fyndmässa (Norrköping OR Krokek OR Kolmården OR Vikbolandet) datum',
+  'site:facebook.com/events (loppis OR bakluckeloppis OR marknad) Norrköping'
 ];
+const excludedHosts = ['instagram.com','tiktok.com','pinterest.com'];
+const localArea = /norrköping|ljura|krokek|kolmården|vikbolandet|skärblacka|kimstad|norsholm|svärtinge|östra husby|dagsbergsvägen/i;
+const eventKind = /loppis|fyndmässa|marknad/i;
 const stockholmDay = new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm'});
 const expiryDays = 90;
 
@@ -29,14 +31,15 @@ export function candidateFromResult(result, today, limit) {
   let url;
   try { url = new URL(result.link); } catch { return null; }
   const host = url.hostname.toLowerCase().replace(/^www\./,'');
-  if (url.protocol !== 'https:' || !allowedHosts.some(domain=>host === domain || host.endsWith('.'+domain))) return null;
+  if (url.protocol !== 'https:' || !host.includes('.') || url.username || url.password
+    || excludedHosts.some(domain=>host === domain || host.endsWith('.'+domain))) return null;
   const facebook = host === 'facebook.com' || host.endsWith('.facebook.com');
   const facebookId = facebook ? url.pathname.match(/^\/events\/(?:[^/]+\/)*(\d{5,})\/?$/)?.[1] : null;
   if (facebook && !facebookId) return null;
   const title = String(result.title ?? '').trim().slice(0,160);
   const snippet = String(result.snippet ?? '').split(/suggested events|föreslagna evenemang/i)[0];
   const context = title + ' ' + snippet;
-  if (!/loppis|fyndmässa/i.test(title) || !/norrköping|ljura|dagsbergsvägen|norra promenaden/i.test(context)
+  if (!eventKind.test(title) || !localArea.test(context)
     || /\btrosa\b|\binställ[dt]\b|\buppskjut[et]n?\b/i.test(context)) return null;
   if (/\d{1,2}\s*[–—-]\s*\d{1,2}\s+[a-zåäö]{3,}/i.test(context)) return null;
   const dates = new Set();
@@ -48,10 +51,23 @@ export function candidateFromResult(result, today, limit) {
     const value = makeDay(Number(year),monthNumber(month),Number(day));
     if (value) dates.add(value);
   }
+  for (const [,year,month,day] of context.matchAll(/\b(20\d{2})-(\d{2})-(\d{2})\b/g)) {
+    const value = makeDay(Number(year),Number(month),Number(day));
+    if (value) dates.add(value);
+  }
+  for (const [,day,month,year] of context.matchAll(/\b(\d{1,2})[/.](\d{1,2})[/.–-](20\d{2})\b/g)) {
+    const value = makeDay(Number(year),Number(month),Number(day));
+    if (value) dates.add(value);
+  }
   if (dates.size !== 1) return null;
   const [day] = dates;
   if (day < today || day > limit) return null;
-  return {title, day, url:facebookId ? 'https://www.facebook.com/events/'+facebookId+'/' : url.origin+url.pathname};
+  if (facebookId) return {title,day,url:'https://www.facebook.com/events/'+facebookId+'/'};
+  url.hash = '';
+  for (const key of [...url.searchParams.keys()]) {
+    if (key.startsWith('utm_') || ['fbclid','gclid'].includes(key)) url.searchParams.delete(key);
+  }
+  return {title,day,url:url.href};
 }
 
 export async function searchCandidates(key, now = new Date(), request = fetch) {
@@ -68,10 +84,10 @@ export async function searchCandidates(key, now = new Date(), request = fetch) {
     if (!response.ok) throw new Error('Serper svarade med HTTP '+response.status);
     const payload = await response.json();
     if (payload.error) throw new Error('Serper rapporterade ett fel.');
-    for (const result of payload.organic ?? []) {
-      const entry = candidateFromResult(result,today,limit);
-      if (entry) found.set(entry.url,entry);
-    }
+    const results = Array.isArray(payload.organic) ? payload.organic : [];
+    const accepted = results.map(result=>candidateFromResult(result,today,limit)).filter(Boolean);
+    for (const entry of accepted) found.set(entry.url+'|'+entry.day,entry);
+    console.log('Sökning:',query,'| Träffar:',results.length,'| Klarade filtret:',accepted.length);
   }
   return [...found.values()];
 }
