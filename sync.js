@@ -9,6 +9,7 @@ import { linkopingChristmasMarkets } from './linkoping-julmarknader.js';
 import { matchMarketDuplicates } from './market-duplicates.js';
 import { upcomingArbisConcerts, matchArbisDuplicates } from './arbis.js';
 import { upcomingIfkMatches, matchIfkDuplicates, footballWindowMs } from './ifk-fotboll.js';
+import { upcomingVitaHomeGames } from './vita-hasten.js';
 
 const now = new Date();
 
@@ -19,7 +20,8 @@ const sources = [
   ['Julmarknader i Linköping', 'events', linkopingChristmasMarkets, 'linkoping-julmarknader'],
   ['Julmarknader i Östergötland', 'events', () => countyChristmasMarkets(now), 'ostergotland-julmarknader'],
   ['Arbis', 'events', () => upcomingArbisConcerts(now), 'arbis'],
-  ['IFK Norrköping', 'events', () => upcomingIfkMatches(now), 'ifk-fotboll']
+  ['IFK Norrköping', 'events', () => upcomingIfkMatches(now), 'ifk-fotboll'],
+  ['Vita Hästen', 'events', () => upcomingVitaHomeGames(now), 'vita-hasten']
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
