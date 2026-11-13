@@ -1,3 +1,4 @@
+import { fetchCalendar } from './fetch-calendar.js';
 const gamlaLinkoping = 'https://gamlalinkoping.se/evenemang/gamlalinkopingsjulmarknad.4.58068221a0421405eca0e.html';
 const hemslojden = 'https://www.linkoping.se/uppleva-och-gora/evenemang-i-linkoping/evenemangskalender/evenemangskalender/2026-10-29-julmarknad-pa-hemslojden';
 const ekenas = 'https://svenska-slottsmassor.se/vara-massor/jul-pa-ekenas-slott/';
@@ -60,9 +61,7 @@ export async function linkopingChristmasMarkets(now = new Date(), request = fetc
   const sources = [[hemslojden,craftMarket]];
   if (today <= '2026-11-15') sources.push([ekenas,castleMarket]);
   const results = await Promise.allSettled(sources.map(async ([url,parse])=>{
-    const response = await request(url,{signal:AbortSignal.timeout(12000)});
-    if (!response.ok) throw new Error(new URL(url).hostname+' svarade med HTTP '+response.status);
-    return parse(await response.text());
+    return parse(await fetchCalendar(url,request));
   }));
   const rows = [...museum];
   for (const result of results) {

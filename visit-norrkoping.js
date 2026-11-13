@@ -1,3 +1,4 @@
+import { fetchCalendar } from './fetch-calendar.js';
 import { createHash } from 'node:crypto';
 
 const calendar = 'https://visit.norrkoping.se/se-och-gora/evenemangskalender';
@@ -100,11 +101,7 @@ export function christmasMarketLinks(html) {
 }
 
 export async function upcomingVisitEvents(now = new Date(), request = fetch) {
-  async function read(url) {
-    const response = await request(url,{signal:AbortSignal.timeout(15000)});
-    if (!response.ok) throw new Error('Visit Norrköping HTTP ' + response.status);
-    return response.text();
-  }
+  const read = url => fetchCalendar(url,request);
   const links = new Map();
   const maxPages = 6;
   for (let page=1; page<=maxPages; page++) {
