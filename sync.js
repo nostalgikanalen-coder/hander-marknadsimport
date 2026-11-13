@@ -8,6 +8,7 @@ import { countyChristmasMarkets } from './ostergotland-julmarknader.js';
 import { linkopingChristmasMarkets } from './linkoping-julmarknader.js';
 import { matchMarketDuplicates } from './market-duplicates.js';
 import { upcomingArbisConcerts, matchArbisDuplicates } from './arbis.js';
+import { upcomingIfkMatches, matchIfkDuplicates, footballWindowMs } from './ifk-fotboll.js';
 
 const now = new Date();
 
@@ -17,7 +18,8 @@ const sources = [
   ['Second hand i Norrköping', 'places', secondhandPlaces, 'secondhand'],
   ['Julmarknader i Linköping', 'events', linkopingChristmasMarkets, 'linkoping-julmarknader'],
   ['Julmarknader i Östergötland', 'events', () => countyChristmasMarkets(now), 'ostergotland-julmarknader'],
-  ['Arbis', 'events', () => upcomingArbisConcerts(now), 'arbis']
+  ['Arbis', 'events', () => upcomingArbisConcerts(now), 'arbis'],
+  ['IFK Norrköping', 'events', () => upcomingIfkMatches(now), 'ifk-fotboll']
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
@@ -25,7 +27,11 @@ console.log('Matchande loppisdubbletter:',duplicates.size);
 const arbisResult = results[sources.findIndex(([, , , id])=>id==='arbis')];
 const arbisDuplicates = matchArbisDuplicates(arbisResult.value ?? [],results[1].value ?? []);
 console.log('Matchande Arbis-dubbletter:',arbisDuplicates.size);
-for (const [id,primary] of arbisDuplicates) duplicates.set(id,primary);
+const ifkResult = results[sources.findIndex(([, , , id])=>id==='ifk-fotboll')];
+const ifkDuplicates = matchIfkDuplicates(ifkResult.value ?? [],results[1].value ?? []);
+console.log('Matchande IFK-dubbletter:',ifkDuplicates.size);
+const venueDuplicates = new Map([...arbisDuplicates,...ifkDuplicates]);
+for (const [id,primary] of venueDuplicates) duplicates.set(id,primary);
 const records = results.flatMap((result,index) => {
   const [name,target] = sources[index];
   if (result.status === 'fulfilled') {
@@ -84,16 +90,16 @@ if (process.argv.includes('--preview')) {
         if (entry.category === 'julmarknad') entry.category = category;
       }
     }
-    const protectedConcerts = new Set();
-    if (arbisDuplicates.size) {
-      const refs = [...arbisDuplicates.keys()].map(id=>db.collection('events').doc(id));
+    const protectedEvents = new Set();
+    if (venueDuplicates.size) {
+      const refs = [...venueDuplicates.keys()].map(id=>db.collection('events').doc(id));
       const current = await db.getAll(...refs);
       for (const record of current) {
         const entry = record.data();
-        if (entry?.importLocked || entry?.hidden) protectedConcerts.add(arbisDuplicates.get(record.id));
+        if (entry?.importLocked || entry?.hidden) protectedEvents.add(venueDuplicates.get(record.id));
       }
     }
-    const writable = records.filter(({entry})=>!protectedConcerts.has(entry.id));
+    const writable = records.filter(({entry})=>!protectedEvents.has(entry.id));
     const counts = {events:0,places:0};
     for (let offset=0; offset<writable.length; offset+=100) {
       const group = writable.slice(offset,offset+100);
@@ -112,13 +118,21 @@ if (process.argv.includes('--preview')) {
       for (const target of written) counts[target]++;
     }
     const staleIds = new Set(duplicates.keys());
-    if (results[0].status === 'fulfilled') {
-      const currentIds = new Set(results[0].value.map(event=>event.id));
+    if (results[0].status === 'fulfilled' || ifkResult.status === 'fulfilled') {
+      const marketIds = new Set(results[0].value?.map(event=>event.id));
+      const footballIds = new Set(ifkResult.value?.map(event=>event.id));
+      const marketEnd = new Date(now.getTime()+marketWindowMs);
+      const footballEnd = new Date(now.getTime()+footballWindowMs);
       const future = await db.collection('events').where('startsAt','>=',now)
-        .where('startsAt','<',new Date(now.getTime()+marketWindowMs)).get();
+        .where('startsAt','<',new Date(Math.max(+marketEnd,+footballEnd))).get();
       for (const record of future.docs) {
         const event = record.data();
-        if (event.source === 'ostgotamarknader' && event.recurringMarket && !currentIds.has(record.id)) staleIds.add(record.id);
+        const start = event.startsAt?.toDate();
+        const oldMarket = results[0].status === 'fulfilled' && start < marketEnd
+          && event.source === 'ostgotamarknader' && event.recurringMarket && !marketIds.has(record.id);
+        const oldMatch = ifkResult.status === 'fulfilled' && start < footballEnd
+          && event.source === 'ifk-fotboll' && !footballIds.has(record.id);
+        if (oldMarket || oldMatch) staleIds.add(record.id);
       }
     }
     const removals = [...staleIds];
@@ -128,7 +142,7 @@ if (process.argv.includes('--preview')) {
         for (const record of await transaction.getAll(...refs)) {
           const item = record.data();
           if (item && !item.importLocked && !item.hidden
-            && (item.source === 'visit-norrkoping' || (item.source === 'ostgotamarknader' && item.recurringMarket))) {
+            && (item.source === 'visit-norrkoping' || item.source === 'ifk-fotboll' || (item.source === 'ostgotamarknader' && item.recurringMarket))) {
             transaction.delete(record.ref);
           }
         }
