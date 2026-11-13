@@ -67,6 +67,15 @@ export function parseStoreDirectory(html) {
   return [...stores.values()];
 }
 
+const verifiedShops = [
+  ['busfro-linkoping','Busfrö Second Hand','Linköping','Bonnorpsgatan 13','https://www.busfro.se/butiker/'],
+  ['busfro-motala','Busfrö Second Hand','Motala','Bispmotalagatan 7-9','https://www.busfro.se/butiker/'],
+  ['busfro-norrkoping','Busfrö Second Hand','Norrköping','Hospitalsgatan 12','https://www.busfro.se/butiker/'],
+  ['geforlivet-finspang','Ge för livet Second Hand','Finspång','Skäggebyvägen 32','https://www.geforlivet.se/finspang'],
+  ['geforlivet-norrkoping','Ge för livet Second Hand','Norrköping','Finspångsvägen 27','https://www.geforlivet.se/norrkoping'],
+  ['geforlivet-atvidaberg','Ge för livet Second Hand','Åtvidaberg','Mejerigatan 2','https://www.geforlivet.se/']
+];
+
 export async function secondhandPlaces(request = fetch) {
   const sources = [[myrorna,parseMyrorna],[erikshjalpen,parseErikshjalpen],[stadsmissionen,parseStadsmissionen],[hjarta,parseStoreDirectory]];
   const results = await Promise.allSettled(sources.map(async ([url,parse]) => {
@@ -80,5 +89,7 @@ export async function secondhandPlaces(request = fetch) {
     return [];
   });
   if (!places.length) throw new Error('Inga butikssidor kunde läsas.');
-  return places;
+  return places.concat(verifiedShops.map(([id,title,municipality,address,sourceUrl])=>({
+    ...place('secondhand-'+id,title,address,'',sourceUrl),municipality
+  })));
 }

@@ -99,23 +99,39 @@ if (process.argv.includes('--preview')) {
         if (entry?.importLocked || entry?.hidden) protectedEvents.add(venueDuplicates.get(record.id));
       }
     }
-    const directoryPrefix = 'secondhand-hjartatillhjarta-';
+    const normalize = value => String(value ?? '').normalize('NFC').toLocaleLowerCase('sv')
+      .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
     const addressKey = item => {
-      if (!item.address || !item.municipality) return '';
-      const normalize = value => value.normalize('NFC').toLocaleLowerCase('sv')
-        .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-      const street = normalize(item.address.replace(/,.*$|\s+\d{3}\s?\d{2}.*$/,''));
-      return street ? normalize(item.municipality)+'|'+street : '';
+      const street = normalize(String(item.address ?? '').split(',').find(part=>/\d/.test(part)) ?? item.address);
+      return street && item.municipality ? normalize(item.municipality)+'|'+street : '';
     };
-    const otherAddresses = new Set();
-    if (records.some(({entry})=>entry.id.startsWith(directoryPrefix))) {
+    const shopAddresses = new Map();
+    if (records.some(({target})=>target==='places')) {
       const places = await db.collection('places').get();
       for (const record of places.docs) {
-        if (!record.id.startsWith(directoryPrefix)) otherAddresses.add(addressKey(record.data()));
+        const item = record.data();
+        const key = addressKey(item);
+        if (!key) continue;
+        const ids = shopAddresses.get(key) ?? new Set();
+        ids.add(record.id);
+        shopAddresses.set(key,ids);
       }
     }
-    const writable = records.filter(({entry})=>!protectedEvents.has(entry.id)
-      && !(entry.id.startsWith(directoryPrefix) && otherAddresses.has(addressKey(entry))));
+    let duplicatesSkipped = 0;
+    const writable = records.filter(({target,entry})=>{
+      if (protectedEvents.has(entry.id)) return false;
+      if (target !== 'places') return true;
+      const key = addressKey(entry);
+      if (!key) return true;
+      const ids = shopAddresses.get(key);
+      if (ids && !ids.has(entry.id)) {
+        duplicatesSkipped++;
+        return false;
+      }
+      shopAddresses.set(key,new Set([entry.id]));
+      return true;
+    });
+    console.log('Butiker som redan har ett kort på adressen:',duplicatesSkipped);
     const counts = {events:0,places:0};
     for (let offset=0; offset<writable.length; offset+=100) {
       const group = writable.slice(offset,offset+100);
