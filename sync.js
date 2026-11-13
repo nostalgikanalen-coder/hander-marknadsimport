@@ -10,6 +10,7 @@ import { matchMarketDuplicates } from './market-duplicates.js';
 import { upcomingArbisConcerts, matchArbisDuplicates } from './arbis.js';
 import { upcomingIfkMatches, matchIfkDuplicates, footballWindowMs } from './ifk-fotboll.js';
 import { upcomingVitaHomeGames } from './vita-hasten.js';
+import { upcomingLhcMatches } from './lhc.js';
 
 const now = new Date();
 
@@ -21,7 +22,8 @@ const sources = [
   ['Julmarknader i Östergötland', 'events', () => countyChristmasMarkets(now), 'ostergotland-julmarknader'],
   ['Arbis', 'events', () => upcomingArbisConcerts(now), 'arbis'],
   ['IFK Norrköping', 'events', () => upcomingIfkMatches(now), 'ifk-fotboll'],
-  ['Vita Hästen', 'events', () => upcomingVitaHomeGames(now), 'vita-hasten']
+  ['Vita Hästen', 'events', () => upcomingVitaHomeGames(now), 'vita-hasten'],
+  ['Linköping HC', 'events', () => upcomingLhcMatches(now), 'lhc']
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
@@ -34,11 +36,14 @@ const ifkDuplicates = matchIfkDuplicates(ifkResult.value ?? [],results[1].value 
 console.log('Matchande IFK-dubbletter:',ifkDuplicates.size);
 const venueDuplicates = new Map([...arbisDuplicates,...ifkDuplicates]);
 for (const [id,primary] of venueDuplicates) duplicates.set(id,primary);
+const stats = sources.map(()=>({added:0,updated:0,skipped:0}));
 const records = results.flatMap((result,index) => {
   const [name,target] = sources[index];
   if (result.status === 'fulfilled') {
     console.log(name + ':', result.value.length, 'träffar');
-    return result.value.filter(entry => !duplicates.has(entry.id)).map(entry => ({target,entry}));
+    const accepted = result.value.filter(entry => !duplicates.has(entry.id));
+    stats[index].skipped = result.value.length - accepted.length;
+    return accepted.map(entry => ({target,entry,sourceIndex:index}));
   }
   console.error(name + ':', result.reason.message);
   process.exitCode = 1;
@@ -71,7 +76,7 @@ async function writeImportStatus(db, writeFailed = false) {
     const ok = !writeFailed && result.status === 'fulfilled';
     const lastAttempt = FieldValue.serverTimestamp();
     const status = {name,lastAttempt,state:ok ? 'ok' : 'error'};
-    if (ok) Object.assign(status,{lastSuccess:FieldValue.serverTimestamp(),count:result.value.length});
+    if (ok) Object.assign(status,{lastSuccess:FieldValue.serverTimestamp(),count:result.value.length,...stats[index]});
     batch.set(db.collection('importStatus').doc(id),status,{merge:true});
   }
   await batch.commit();
@@ -120,14 +125,18 @@ if (process.argv.includes('--preview')) {
       }
     }
     let duplicatesSkipped = 0;
-    const writable = records.filter(({target,entry})=>{
-      if (protectedEvents.has(entry.id)) return false;
+    const writable = records.filter(({target,entry,sourceIndex})=>{
+      if (protectedEvents.has(entry.id)) {
+        stats[sourceIndex].skipped++;
+        return false;
+      }
       if (target !== 'places') return true;
       const key = addressKey(entry);
       if (!key) return true;
       const ids = shopAddresses.get(key);
       if (ids && !ids.has(entry.id)) {
         duplicatesSkipped++;
+        stats[sourceIndex].skipped++;
         return false;
       }
       shopAddresses.set(key,new Set([entry.id]));
@@ -140,16 +149,22 @@ if (process.argv.includes('--preview')) {
       const references = group.map(({target,entry})=>db.collection(target).doc(entry.id));
       const written = await db.runTransaction(async transaction => {
         const existing = await transaction.getAll(...references);
-        const updated = [];
-        for (const [index,{target,entry:{id,...entry}}] of group.entries()) {
+        const outcomes = [];
+        for (const [index,{target,sourceIndex,entry:{id,...entry}}] of group.entries()) {
           const current = existing[index].data();
-          if (current?.importLocked === true || current?.hidden === true) continue;
+          if (current?.importLocked === true || current?.hidden === true) {
+            outcomes.push({target,sourceIndex,kind:'skipped'});
+            continue;
+          }
           transaction.set(references[index],{...entry,updatedAt:FieldValue.serverTimestamp()},{merge:true});
-          updated.push(target);
+          outcomes.push({target,sourceIndex,kind:existing[index].exists ? 'updated' : 'added'});
         }
-        return updated;
+        return outcomes;
       });
-      for (const target of written) counts[target]++;
+      for (const {target,sourceIndex,kind} of written) {
+        stats[sourceIndex][kind]++;
+        if (kind !== 'skipped') counts[target]++;
+      }
     }
     const staleIds = new Set(duplicates.keys());
     if (results[0].status === 'fulfilled' || ifkResult.status === 'fulfilled') {
