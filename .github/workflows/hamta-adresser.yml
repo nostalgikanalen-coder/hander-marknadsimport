@@ -64,14 +64,34 @@ jobs:
             locations.set(id,item);
           }
 
+          const names = [
+            ['norrköping','de geerhallen','louis de geer konsert kongress','louis de geer konsert och kongress'],
+            ['motala','folkets hus teatersalongen','folkets hus teater salongen','teatersalongen motala folkets hus','motala folkets hus'],
+            ['motala','brunneby musteri borensberg','brunneby musteri'],
+            ['linköping','gamla linköpings stadskvarter','gamla linköping'],
+            ['norrköping','kolmårdens djurpark','kolmården djurpark']
+          ];
+          const postalTowns = new Map([
+            ['motala',['motala','borensberg','tjällmo']],
+            ['norrköping',['norrköping','åby','kolmården','krokek','skärblacka']],
+            ['linköping',['linköping','vreta kloster','ljungsbro','sturefors']]
+          ]);
+          const fixed = new Map([
+            ['norrköping|de geerhallen',{address:'Dalsgatan 15',latitude:58.5881726,longitude:16.1842062}],
+            ['norrköping|holmentorget',{address:'Holmentorget',latitude:58.5881002,longitude:16.1815537}]
+          ]);
+          function group(item) {
+            return names.find(([town,...variants])=>town===norm(item.municipality) && variants.includes(norm(item.name)));
+          }
           function matchingPlaces(places,item) {
             const hits = new Map();
+            const town = norm(item.municipality);
+            const variants = group(item)?.slice(1) ?? [norm(item.name)];
             for (const place of places) {
               const address = String(place.address ?? '').trim();
-              const town = norm(item.municipality);
               const postalTown = norm(address.match(/\b\d{3}\s?\d{2}\s+([^,]+)/)?.[1]);
-              if (norm(place.title) !== norm(item.name) || postalTown !== town
-                || !/\d/.test(address.split(',')[0]) || address.length>180
+              if (!variants.includes(norm(place.title)) || !(postalTowns.get(town) ?? [town]).includes(postalTown)
+                || !address || address.length>180
                 || !Number.isFinite(place.latitude) || Math.abs(place.latitude)>90
                 || !Number.isFinite(place.longitude) || Math.abs(place.longitude)>180) continue;
               const {latitude,longitude} = place;
@@ -83,8 +103,13 @@ jobs:
           let calls=0, matched=0, saved=0;
           const ordered=[...locations].sort((a,b)=>b[1].count-a[1].count);
           console.log('Lokaler att kontrollera:',ordered.length);
+          const checked = new Set(known);
           for (const [id,item] of ordered) {
-            let hits=item.verified;
+            const variants=group(item)?.slice(1) ?? [norm(item.name)];
+            const keys=variants.map(name=>key(name,item.municipality));
+            if (keys.some(value=>checked.has(value))) continue;
+            const seed=keys.map(value=>fixed.get(value)).find(Boolean);
+            let hits=seed ? new Map([['known',seed]]) : item.verified;
             if (!hits.size) {
               if (calls>=35) { console.log('Sökgränsen för körningen är nådd.'); break; }
               calls++;
@@ -105,7 +130,8 @@ jobs:
               console.log('Hoppar över:',JSON.stringify({plats:item.name,kommun:item.municipality,matchningar:hits.size}));
               continue;
             }
-            const result={name:item.name,municipality:item.municipality,aliases:[],...[...hits.values()][0]};
+            const result={name:item.name,municipality:item.municipality,aliases:variants.filter(name=>name!==norm(item.name)),...[...hits.values()][0]};
+            for (const value of keys) checked.add(value);
             matched++;
             console.log('Matchning:',JSON.stringify(result));
             if (!apply) continue;
@@ -114,7 +140,7 @@ jobs:
               const current=await tx.get(registry);
               if (current.docs.some(record=>{
                 const entry=record.data();
-                return [entry.name,...(entry.aliases ?? [])].some(name=>key(name,entry.municipality)===id);
+                return [entry.name,...(entry.aliases ?? [])].some(name=>keys.includes(key(name,entry.municipality)));
               })) return false;
               tx.create(ref,result);
               return true;
