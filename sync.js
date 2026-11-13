@@ -1,3 +1,4 @@
+import { upcomingMotalaEvents } from './motala.js';
 import { upcomingLinkopingEvents } from './visit-linkoping.js';
 import { cert, initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
@@ -25,6 +26,7 @@ const sources = [
   ['IFK Norrköping', 'events', () => upcomingIfkMatches(now), 'ifk-fotboll'],
   ['Vita Hästen', 'events', () => upcomingVitaHomeGames(now), 'vita-hasten'],
   ['Visit Linköping', 'events', () => upcomingLinkopingEvents(now), 'visit-linkoping'],
+  ['Motala Sjöstad', 'events', () => upcomingMotalaEvents(now), 'motala-sjostad'],
   ['Linköping HC', 'events', () => upcomingLhcMatches(now), 'lhc']
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
