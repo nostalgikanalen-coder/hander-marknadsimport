@@ -1,3 +1,4 @@
+import { upcomingLinkopingEvents } from './visit-linkoping.js';
 import { cert, initializeApp } from 'firebase-admin/app';
 import { FieldValue, getFirestore } from 'firebase-admin/firestore';
 import { readFeed, upcomingMarkets, marketWindowMs } from './calendar.js';
@@ -23,6 +24,7 @@ const sources = [
   ['Arbis', 'events', () => upcomingArbisConcerts(now), 'arbis'],
   ['IFK Norrköping', 'events', () => upcomingIfkMatches(now), 'ifk-fotboll'],
   ['Vita Hästen', 'events', () => upcomingVitaHomeGames(now), 'vita-hasten'],
+  ['Visit Linköping', 'events', () => upcomingLinkopingEvents(now), 'visit-linkoping'],
   ['Linköping HC', 'events', () => upcomingLhcMatches(now), 'lhc']
 ];
 const results = await Promise.allSettled(sources.map(([,,load]) => load()));
