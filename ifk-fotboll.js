@@ -44,14 +44,44 @@ export function parseHomeMatches(content,now = new Date()) {
   return [...rows].filter(([key])=>!collisions.has(key)).map(([,row])=>row);
 }
 
+const matchClock = new Intl.DateTimeFormat('sv-SE',{
+  timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit',hourCycle:'h23'
+});
+const baseTitle = title => title.replace(/ \(Damer\)$| \(Herrar\)$/i,'');
+const clean = value => value.replace(/&amp;/g,'&').replace(/&ndash;|&#8211;/g,'–').replace(/&nbsp;/g,' ').trim();
+
+export function addTeamLabels(matches, html) {
+  const labels = new Map();
+  const key = (title, day, month, time) => [normalize(baseTitle(title)),Number(day),Number(month),time].join('|');
+  for (const [,title,day,month,time,team] of html.matchAll(/<h3 class="post-title">([^<]+)<\/h3>\s*<location>[^<]+<\/location>\s*\|\s*<time>(\d{1,2})\/(\d{1,2})\s+(\d{2}:\d{2})<\/time>\s*<div class="type-lag">[^<|]*\|\s*(Damer|Herrar)\s*<\/div>/gi)) {
+    const identity = key(clean(title),day,month,time);
+    const label = /^damer$/i.test(team) ? 'Damer' : 'Herrar';
+    labels.set(identity,labels.has(identity) && labels.get(identity) !== label ? null : label);
+  }
+  return matches.map(match => {
+    const [,month,day] = localDay.format(match.startsAt).split('-');
+    const team = labels.get(key(match.title,day,month,matchClock.format(match.startsAt)));
+    return team ? {...match,title:match.title+' ('+team+')',team} : match;
+  });
+}
+
 export async function upcomingIfkMatches(now = new Date(),request = fetch) {
   const response = await request(feed,{signal:AbortSignal.timeout(12000)});
   if (!response.ok) throw new Error('IFK svarade med HTTP '+response.status);
-  return parseHomeMatches(await response.text(),now);
+  const matches = parseHomeMatches(await response.text(),now);
+  if (!matches.length) return matches;
+  try {
+    const page = await request(sourceUrl,{signal:AbortSignal.timeout(12000)});
+    if (!page.ok) throw new Error('HTTP '+page.status);
+    return addTeamLabels(matches,await page.text());
+  } catch (error) {
+    console.warn('IFK: lag kunde inte läsas från matchlistan:',error.message);
+    return matches;
+  }
 }
 
 export function matchIfkDuplicates(matches,visit) {
-  const key = item=>[normalize(item.title),item.startsAt.toISOString()].join('|');
+  const key = item=>[normalize(baseTitle(item.title)),item.startsAt.toISOString()].join('|');
   const known = new Map(matches.map(item=>[key(item),item.id]));
   const duplicates = new Map();
   for (const item of visit) {
