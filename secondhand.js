@@ -46,8 +46,29 @@ function parseStadsmissionen(html) {
   return places;
 }
 
+const hjarta = 'https://hjartatillhjarta.se/second-hand/';
+const municipalities = new Map([['Linköping','Linköping'],['Mjölby','Mjölby'],['Motala','Motala'],['Kisa','Kinda']]);
+
+export function parseStoreDirectory(html) {
+  const stores = new Map();
+  for (const [,paragraph] of html.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/gi)) {
+    const line = plain(paragraph.replace(/<br\s*\/?>/gi,' '));
+    const address = line.match(/Adress\s*:?\s*([^<>]+?)\s+\d{3}\s?\d{2}\s+(Linköping|Mjölby|Motala|Kisa)(?=\s|$)/);
+    if (!address) continue;
+    const [,street,town] = address;
+    const key = town.toLowerCase().replace(/[ö]/g,'o');
+    const slug = key.replace(/ä/g,'a');
+    stores.set(slug,{
+      ...place('secondhand-hjartatillhjarta-'+slug,'Hjärta till Hjärta Second Hand',street.trim(),'',hjarta+'#'+slug),
+      municipality:municipalities.get(town)
+    });
+  }
+  if (!stores.size) throw new Error('Butikskatalogens adresser kunde inte läsas.');
+  return [...stores.values()];
+}
+
 export async function secondhandPlaces(request = fetch) {
-  const sources = [[myrorna,parseMyrorna],[erikshjalpen,parseErikshjalpen],[stadsmissionen,parseStadsmissionen]];
+  const sources = [[myrorna,parseMyrorna],[erikshjalpen,parseErikshjalpen],[stadsmissionen,parseStadsmissionen],[hjarta,parseStoreDirectory]];
   const results = await Promise.allSettled(sources.map(async ([url,parse]) => {
     const response = await request(url,{signal:AbortSignal.timeout(12000)});
     if (!response.ok) throw new Error('HTTP ' + response.status);

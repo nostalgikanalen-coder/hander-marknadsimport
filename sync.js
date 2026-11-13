@@ -99,7 +99,23 @@ if (process.argv.includes('--preview')) {
         if (entry?.importLocked || entry?.hidden) protectedEvents.add(venueDuplicates.get(record.id));
       }
     }
-    const writable = records.filter(({entry})=>!protectedEvents.has(entry.id));
+    const directoryPrefix = 'secondhand-hjartatillhjarta-';
+    const addressKey = item => {
+      if (!item.address || !item.municipality) return '';
+      const normalize = value => value.normalize('NFC').toLocaleLowerCase('sv')
+        .replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+      const street = normalize(item.address.replace(/,.*$|\s+\d{3}\s?\d{2}.*$/,''));
+      return street ? normalize(item.municipality)+'|'+street : '';
+    };
+    const otherAddresses = new Set();
+    if (records.some(({entry})=>entry.id.startsWith(directoryPrefix))) {
+      const places = await db.collection('places').get();
+      for (const record of places.docs) {
+        if (!record.id.startsWith(directoryPrefix)) otherAddresses.add(addressKey(record.data()));
+      }
+    }
+    const writable = records.filter(({entry})=>!protectedEvents.has(entry.id)
+      && !(entry.id.startsWith(directoryPrefix) && otherAddresses.has(addressKey(entry))));
     const counts = {events:0,places:0};
     for (let offset=0; offset<writable.length; offset+=100) {
       const group = writable.slice(offset,offset+100);
