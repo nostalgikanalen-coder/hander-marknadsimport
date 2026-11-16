@@ -15,12 +15,21 @@ async function read(url) {
   return response.text();
 }
 
-let existing = [];
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  const db = getFirestore(initializeApp({credential:cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT))}));
-  existing = (await db.collection('events').where('startsAt','>=',Timestamp.fromDate(new Date(Date.parse(today+'T00:00:00Z') - 2*3600000)))
-    .select('title','municipality','startsAt','hidden','venueName').get()).docs.map(doc=>doc.data()).filter(item=>!item.hidden);
-} else console.log('Firestore-jämförelse saknas. Ingen tjänstkontonyckel angavs.');
+const apply = process.argv.includes('--apply');
+const account = process.env.FIREBASE_SERVICE_ACCOUNT;
+if (!account) throw new Error('GitHub-hemligheten FIREBASE_SERVICE_ACCOUNT saknas.');
+const db = getFirestore(initializeApp({credential:cert(JSON.parse(account))}));
+const events = db.collection('events');
+const existing = (await events.where('startsAt','>=',Timestamp.fromMillis(Date.parse(today+'T00:00Z') - 7200000))
+  .select('title','municipality','startsAt','venueName').get()).docs.map(doc=>doc.data());
+const planned = new Map();
+const toLocalTimestamp = (date,time) => {
+  const wall = Date.parse(date+'T'+time.padStart(5,'0')+':00Z');
+  const matches = [1,2].map(offset => new Date(wall - offset*3600000))
+    .filter(value => Number.isFinite(value.getTime()) && day.format(value) === date
+      && localTime.format(value) === time.padStart(5,'0'));
+  return matches.length === 1 ? Timestamp.fromDate(matches[0]) : null;
+};
 
 for (const town of towns) {
   try {
@@ -45,16 +54,38 @@ for (const town of towns) {
         }));
         const sameSlot = candidates.some(event => event.time === time && venue
           && normalize(event.venue) === normalize(venue));
-        const result = !time || !venue ? 'uppgifter saknas'
-          : !process.env.FIREBASE_SERVICE_ACCOUNT ? 'ej jämförd'
+        const startsAt = time && toLocalTimestamp(item.date,time);
+        const result = !startsAt || !venue || !title ? 'uppgifter saknas'
           : sameSlot ? 'möjlig dublett'
           : candidates.length ? 'granska tid eller lokal' : 'ny kandidat';
+        if (result === 'ny kandidat') {
+          const id = 'tickster-'+path.split('/')[4];
+          planned.set(id,{title,municipality:town,venueName:venue,startsAt,
+            category:'annat',source:'tickster',sourceUrl:base+path});
+        }
         console.log(JSON.stringify({town,title,date:item.date,time:time ?? null,venue:venue || null,
           url:base+path,result,candidates}));
-      } catch(error) { console.warn(base+path,error.message); }
+      } catch(error) { console.warn(base+path,error.message); process.exitCode = 1; }
     }
   } catch(error) {
     console.error(town,error.message);
     process.exitCode = 1;
   }
 }
+
+console.log('Kandidater efter jämförelse:',planned.size);
+if (apply && !process.exitCode && planned.size) {
+  const entries = [...planned];
+  const added = await db.runTransaction(async transaction => {
+    const refs = entries.map(([id]) => events.doc(id));
+    const snapshots = await transaction.getAll(...refs);
+    let count = 0;
+    snapshots.forEach((snapshot,index) => {
+      if (snapshot.exists) return;
+      transaction.create(refs[index],entries[index][1]);
+      count++;
+    });
+    return count;
+  });
+  console.log('Skapade:',added);
+} else console.log('Inga poster sparades.');
