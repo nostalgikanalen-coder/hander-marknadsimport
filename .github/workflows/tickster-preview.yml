@@ -1,17 +1,32 @@
 name: Förhandsgranska Tickster
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      importera:
+        description: Spara nya kandidater i Firestore
+        type: boolean
+        default: false
 permissions:
   contents: read
+concurrency:
+  group: tickster-import
+  cancel-in-progress: false
 jobs:
   preview:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
       - run: npm ci --ignore-scripts
-      - run: node tickster-preview.js
+      - run: |
+          if [ "$IMPORTERA" = true ]; then
+            node tickster-preview.js --apply
+          else
+            node tickster-preview.js
+          fi
         env:
+          IMPORTERA: ${{ inputs.importera }}
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
