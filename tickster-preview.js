@@ -4,6 +4,7 @@ import {getFirestore, Timestamp} from 'firebase-admin/firestore';
 const towns = ['Norrköping','Linköping','Motala','Mjölby'];
 const base = 'https://www.tickster.com';
 const day = new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm'});
+const localTime = new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 const today = day.format(new Date());
 const normalize = value => String(value ?? '').toLocaleLowerCase('sv').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 const plain = html => html.replace(/<[^>]*>/g,' ').replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Math.min(Number(n),0x10ffff)))
@@ -17,8 +18,8 @@ async function read(url) {
 let existing = [];
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   const db = getFirestore(initializeApp({credential:cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT))}));
-  existing = (await db.collection('events').where('startsAt','>=',Timestamp.fromDate(new Date(today+'T00:00:00+02:00')))
-    .select('title','municipality','startsAt','hidden').get()).docs.map(doc=>doc.data()).filter(item=>!item.hidden);
+  existing = (await db.collection('events').where('startsAt','>=',Timestamp.fromDate(new Date(Date.parse(today+'T00:00:00Z') - 2*3600000)))
+    .select('title','municipality','startsAt','hidden','venueName').get()).docs.map(doc=>doc.data()).filter(item=>!item.hidden);
 } else console.log('Firestore-jämförelse saknas. Ingen tjänstkontonyckel angavs.');
 
 for (const town of towns) {
@@ -28,8 +29,8 @@ for (const town of towns) {
     for (const [,path,date,label] of html.matchAll(/href=["'](?:https:\/\/www\.tickster\.com)?(\/se\/sv\/events\/[a-z0-9]+\/(\d{4}-\d{2}-\d{2})\/[^"'?#]+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
       if (date >= today) links.set(path,{date,title:plain(label)});
     }
-    console.log(town, links.size,'kommande länkar på första sidan. Kontrollerar högst 8.');
-    for (const [path,item] of [...links].slice(0,8)) {
+    console.log(town, links.size,'kommande länkar på första sidan.');
+    for (const [path,item] of links) {
       try {
         const html = await read(base+path);
         const title = plain(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? item.title);
@@ -39,8 +40,17 @@ for (const town of towns) {
         const comparison = existing.filter(event => normalize(event.municipality) === normalize(town)
           && day.format(event.startsAt.toDate()) === item.date
           && normalize(event.title) === normalize(title));
+        const candidates = comparison.map(event => ({
+          time:localTime.format(event.startsAt.toDate()), venue:event.venueName ?? null
+        }));
+        const sameSlot = candidates.some(event => event.time === time && venue
+          && normalize(event.venue) === normalize(venue));
+        const result = !time || !venue ? 'uppgifter saknas'
+          : !process.env.FIREBASE_SERVICE_ACCOUNT ? 'ej jämförd'
+          : sameSlot ? 'möjlig dublett'
+          : candidates.length ? 'granska tid eller lokal' : 'ny kandidat';
         console.log(JSON.stringify({town,title,date:item.date,time:time ?? null,venue:venue || null,
-          url:base+path,possibleDuplicates:comparison.map(event=>event.startsAt.toDate().toISOString())}));
+          url:base+path,result,candidates}));
       } catch(error) { console.warn(base+path,error.message); }
     }
   } catch(error) {
