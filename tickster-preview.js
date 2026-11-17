@@ -22,6 +22,16 @@ const db = getFirestore(initializeApp({credential:cert(JSON.parse(account))}));
 const events = db.collection('events');
 const existing = (await events.where('startsAt','>=',Timestamp.fromMillis(Date.parse(today+'T00:00Z') - 7200000))
   .select('title','municipality','startsAt','venueName').get()).docs.map(doc=>doc.data());
+function classify(title, venue) {
+  const name = normalize(title);
+  if (/\b(julmarknad|julmarknader)\b/.test(name)) return 'julmarknad';
+  if (/\b(loppis|bakluckeloppis)\b/.test(name)) return 'loppis';
+  if (/\b(standup|teater|musikal|workshop|utställning|mässa|retromania)\b/.test(name)) return 'kultur';
+  if (/^(dungen)$/.test(name) || /\b(konsert|live|tribute|rock|punk fest)\b/.test(name)
+      || /\b(platens bar|palatset|bomber bar)\b/.test(normalize(venue))) return 'musik';
+  return 'annat';
+}
+const classification = new Map();
 const planned = new Map();
 const toLocalTimestamp = (date,time) => {
   const wall = Date.parse(date+'T'+time.padStart(5,'0')+':00Z');
@@ -58,13 +68,15 @@ for (const town of towns) {
         const result = !startsAt || !venue || !title ? 'uppgifter saknas'
           : sameSlot ? 'möjlig dublett'
           : candidates.length ? 'granska tid eller lokal' : 'ny kandidat';
+        const id = 'tickster-'+path.split('/')[4];
+        const category = classify(title,venue);
+        if (startsAt && venue && category !== 'annat') classification.set(id,category);
         if (result === 'ny kandidat') {
-          const id = 'tickster-'+path.split('/')[4];
           planned.set(id,{title,municipality:town,venueName:venue,startsAt,
-            category:'annat',source:'tickster',sourceUrl:base+path});
+            category,source:'tickster',sourceUrl:base+path});
         }
         console.log(JSON.stringify({town,title,date:item.date,time:time ?? null,venue:venue || null,
-          url:base+path,result,candidates}));
+          url:base+path,category,result,candidates}));
       } catch(error) { console.warn(base+path,error.message); process.exitCode = 1; }
     }
   } catch(error) {
@@ -74,18 +86,27 @@ for (const town of towns) {
 }
 
 console.log('Kandidater efter jämförelse:',planned.size);
-if (apply && !process.exitCode && planned.size) {
-  const entries = [...planned];
-  const added = await db.runTransaction(async transaction => {
-    const refs = entries.map(([id]) => events.doc(id));
+if (apply && !process.exitCode) {
+  const ids = [...new Set([...planned.keys(),...classification.keys()])];
+  const counts = {added:0,updated:0};
+  if (ids.length) Object.assign(counts,await db.runTransaction(async transaction => {
+    const refs = ids.map(id => events.doc(id));
     const snapshots = await transaction.getAll(...refs);
-    let count = 0;
+    const result = {added:0,updated:0};
     snapshots.forEach((snapshot,index) => {
-      if (snapshot.exists) return;
-      transaction.create(refs[index],entries[index][1]);
-      count++;
+      const id = ids[index];
+      const current = snapshot.data();
+      if (!snapshot.exists && planned.has(id)) {
+        transaction.create(refs[index],planned.get(id));
+        result.added++;
+      } else if (current?.source === 'tickster' && current.category === 'annat'
+        && !current.hidden && !current.importLocked && classification.has(id)) {
+        transaction.update(refs[index],{category:classification.get(id)});
+        result.updated++;
+      }
     });
-    return count;
-  });
-  console.log('Skapade:',added);
+    return result;
+  }));
+  console.log('Skapade:',counts.added);
+  console.log('Omklassificerade:',counts.updated);
 } else console.log('Inga poster sparades.');
