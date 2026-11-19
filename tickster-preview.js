@@ -119,17 +119,17 @@ for (const town of towns) {
         const category = classify(title,venue);
         const own = existing.find(event => event.id === id);
         if (own && own.source === 'tickster') {
-          if (cancelled) changes.set(id,{hidden:true});
+          if (cancelled) changes.set(id,{cancelled:true});
           else if (startsAt && title && venue) changes.set(id,{title,startsAt,venueName:venue,sourceUrl:base+path,
             ...(own.category === 'annat' && category !== 'annat' ? {category} : {})});
         }
-        if (result === 'ny kandidat' && !cancelled && !own) {
+        if (result === 'ny kandidat' && !own) {
           planned.set(id,{title,municipality:town,venueName:venue,startsAt,
-            category,source:'tickster',sourceUrl:base+path});
+            category,cancelled,source:'tickster',sourceUrl:base+path});
         }
         console.log(JSON.stringify({town,title,date:date ?? item.date,time:time ?? null,venue:venue || null,
           url:base+path,category,cancelled,
-          result:own ? (own.importLocked || own.hidden ? 'skyddad post' : cancelled ? 'inställt – föreslås döljas' : 'befintlig Tickster-post') : cancelled ? 'inställt – hoppas över' : result,candidates}));
+          result:own ? (own.importLocked || own.hidden ? 'skyddad post' : cancelled ? 'inställt – markeras' : 'befintlig Tickster-post') : cancelled ? 'ny kandidat – inställt' : result,candidates}));
       } catch(error) {
         if ([404,410].includes(error.status)) {
           console.warn('Granska borttagen Tickster-sida:',base+path,'HTTP',error.status);
@@ -157,7 +157,7 @@ for (const [id,patch] of changes) {
   if (Object.keys(updated).length) console.log('Föreslagen uppdatering:',JSON.stringify({
     id,title:current.title,fields:Object.keys(updated),
     oldStart:current.startsAt?.toDate?.().toISOString(),newStart:updated.startsAt?.toDate().toISOString(),
-    hide:updated.hidden === true
+    cancelled:updated.cancelled === true
   }));
 }
 if (apply && !process.exitCode) {
@@ -184,7 +184,7 @@ if (apply && !process.exitCode) {
         const updated = different(current,patch);
         if (!Object.keys(updated).length) return;
         transaction.update(refs[index],updated);
-        if (updated.hidden === true) result.hidden++;
+        if (updated.cancelled === true) result.hidden++;
         else result.updated++;
       }
     });
@@ -192,6 +192,6 @@ if (apply && !process.exitCode) {
   }));
   console.log('Skapade:',counts.added);
   console.log('Uppdaterade:',counts.updated);
-  console.log('Dolda efter inställt:',counts.hidden);
+  console.log('Markerade som inställda:',counts.hidden);
   console.log('Skyddade manuella poster:',counts.protected);
 } else console.log('Inga poster sparades.');
