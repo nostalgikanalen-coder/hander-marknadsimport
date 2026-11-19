@@ -38,6 +38,13 @@ function similarVenue(left, right) {
   return a.length >= 4 && b.length >= 4
     && (a === b || a.startsWith(b+' ') || b.startsWith(a+' '));
 }
+function isCinemaScreening(title, venue) {
+  if (/filmfestival/iu.test(title)) return false;
+  return /^(?:bio|dagbio|knattebio|barnbio|seniorbio|skolbio|familjebio)\s*:/iu.test(title.trim())
+    || /\b(?:dagbio|knattebio|barnbio|seniorbio|skolbio)\b/iu.test(title)
+    || /\bbio(?:graf)?\b/iu.test(venue);
+}
+
 function classify(title, venue) {
   const name = normalize(title);
   if (/\b(julmarknad|julmarknader)\b/.test(name)) return 'julmarknad';
@@ -85,6 +92,10 @@ for (const town of towns) {
         const html = await read(base+path);
         const title = plain(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1] ?? item.title);
         const venue = plain(html.match(/<a\b[^>]*href=["'][^"']*\/events\/at\/[^"']+["'][^>]*>([\s\S]*?)<\/a>/i)?.[1] ?? '');
+        if (isCinemaScreening(title,venue)) {
+          console.log('Hoppar över biovisning:',town,title);
+          continue;
+        }
         const text = plain(html.replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,''));
         const months = ['januari','februari','mars','april','maj','juni','juli','augusti','september','oktober','november','december'];
         const dated = text.match(/\bden\s+(\d{1,2})\s+(januari|februari|mars|april|maj|juni|juli|augusti|september|oktober|november|december)\s+(\d{4})/iu);
