@@ -11,7 +11,7 @@ const plain = html => html.replace(/<[^>]*>/g,' ').replace(/&#(\d+);/g,(_,n)=>St
   .replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
 async function read(url) {
   const response = await fetch(url,{signal:AbortSignal.timeout(12000)});
-  if (!response.ok) throw new Error('HTTP '+response.status);
+  if (!response.ok) throw Object.assign(new Error('HTTP '+response.status), {status:response.status});
   return response.text();
 }
 
@@ -101,7 +101,14 @@ for (const town of towns) {
         console.log(JSON.stringify({town,title,date:date ?? item.date,time:time ?? null,venue:venue || null,
           url:base+path,category,cancelled,
           result:own ? (own.importLocked || own.hidden ? 'skyddad post' : cancelled ? 'inställt – föreslås döljas' : 'befintlig Tickster-post') : cancelled ? 'inställt – hoppas över' : result,candidates}));
-      } catch(error) { console.warn(base+path,error.message); process.exitCode = 1; }
+      } catch(error) {
+        if ([404,410].includes(error.status)) {
+          console.warn('Granska borttagen Tickster-sida:',base+path,'HTTP',error.status);
+        } else {
+          console.error(base+path,error.message);
+          process.exitCode = 1;
+        }
+      }
     }
   } catch(error) {
     console.error(town,error.message);
