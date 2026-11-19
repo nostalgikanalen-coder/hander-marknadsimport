@@ -8,6 +8,8 @@ const localTime = new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm',h
 const today = day.format(new Date());
 const normalize = value => String(value ?? '').toLocaleLowerCase('sv').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
 const plain = html => html.replace(/<[^>]*>/g,' ').replace(/&#(\d+);/g,(_,n)=>String.fromCodePoint(Math.min(Number(n),0x10ffff)))
+  .replace(/&#x([a-f0-9]+);/gi,(_,n)=>String.fromCodePoint(Math.min(parseInt(n,16),0x10ffff)))
+  .replace(/&auml;/g,'ä').replace(/&ouml;/g,'ö').replace(/&aring;/g,'å')
   .replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&nbsp;/g,' ').replace(/\s+/g,' ').trim();
 async function read(url) {
   const response = await fetch(url,{signal:AbortSignal.timeout(12000)});
@@ -87,8 +89,19 @@ for (const town of towns) {
         const months = ['januari','februari','mars','april','maj','juni','juli','augusti','september','oktober','november','december'];
         const dated = text.match(/\bden\s+(\d{1,2})\s+(januari|februari|mars|april|maj|juni|juli|augusti|september|oktober|november|december)\s+(\d{4})/iu);
         const date = dated ? dated[3]+'-'+String(months.indexOf(dated[2].toLowerCase())+1).padStart(2,'0')+'-'+dated[1].padStart(2,'0') : null;
-        const cancelled = /<h[1-6]\b[^>]*>\s*(?:<[^>]+>\s*)*Evenemanget är inställt!?(?:\s*<[^>]+>)*\s*<\/h[1-6]>/iu.test(html)
+        let cancelled = /\bevenemanget är inställt\b/iu.test(text)
           || /^(?:obs\s+)?inställt\b/iu.test(title.trim());
+        if (id === 'tickster-r3jxhurbch9ybhm') {
+          const organizerUrl = 'https://louisdegeer.se/evenemang/en-innerlig-jul-med-andreas-aleman-och-tareq-taylor/';
+          const organizerText = plain((await read(organizerUrl)).replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,''));
+          const correctEvent = /En innerlig jul/iu.test(organizerText)
+            && /19\s+november\s+2026/iu.test(organizerText)
+            && /Flygeln/iu.test(organizerText);
+          if (correctEvent && /Konserten har ställts in/iu.test(organizerText)) {
+            cancelled = true;
+            console.log('Inställning bekräftad av arrangören:',organizerUrl);
+          }
+        }
         const time = text.match(/\bStartar\s+(?:\d{1,2}\s+[\p{L}.]+\s+)?(\d{1,2}:\d{2})\b/iu)?.[1];
         const comparison = existing.filter(event => normalize(event.municipality) === normalize(town)
           && day.format(event.startsAt.toDate()) === (date ?? item.date)
