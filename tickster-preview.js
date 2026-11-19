@@ -22,13 +22,28 @@ const db = getFirestore(initializeApp({credential:cert(JSON.parse(account))}));
 const events = db.collection('events');
 const existing = (await events.where('startsAt','>=',Timestamp.fromMillis(Date.parse(today+'T00:00Z') - 7200000))
   .get()).docs.map(doc=>({...doc.data(),id:doc.id}));
+function similarTitle(left, right) {
+  const words = value => normalize(value).split(' ').filter(word =>
+    word.length > 2 && !['with','and','med','the','special','guest','guests','trio'].includes(word));
+  const a = [...new Set(words(left))];
+  const b = [...new Set(words(right))];
+  const shared = a.filter(word => b.includes(word)).length;
+  return shared >= 2 && shared / Math.max(a.length,b.length) >= 0.6;
+}
+function similarVenue(left, right) {
+  const a = normalize(left);
+  const b = normalize(right);
+  return a.length >= 4 && b.length >= 4
+    && (a === b || a.startsWith(b+' ') || b.startsWith(a+' '));
+}
 function classify(title, venue) {
   const name = normalize(title);
   if (/\b(julmarknad|julmarknader)\b/.test(name)) return 'julmarknad';
   if (/\b(loppis|bakluckeloppis)\b/.test(name)) return 'loppis';
-  if (/\b(standup|teater|musikal|workshop|utställning|mässa|retromania)\b/.test(name)) return 'kultur';
-  if (/^(dungen)$/.test(name) || /\b(konsert|live|tribute|rock|punk fest)\b/.test(name)
-      || /\b(platens bar|palatset|bomber bar)\b/.test(normalize(venue))) return 'musik';
+  if (/\b(standup|teater|musikal|workshop|utställning|mässa|retromania|filmfestival)\b/.test(name)) return 'kultur';
+  if (/\bteater\b/.test(normalize(venue))) return 'kultur';
+  if (/^(dungen)$/.test(name) || /\b(konsert|live|tribute|rock|punk fest|jazz)\b/.test(name)
+      || /\b(platens bar|palatset|bomber bar|arbis)\b/.test(normalize(venue))) return 'musik';
   return 'annat';
 }
 const changes = new Map();
@@ -77,16 +92,17 @@ for (const town of towns) {
         const time = text.match(/\bStartar\s+(?:\d{1,2}\s+[\p{L}.]+\s+)?(\d{1,2}:\d{2})\b/iu)?.[1];
         const comparison = existing.filter(event => normalize(event.municipality) === normalize(town)
           && day.format(event.startsAt.toDate()) === (date ?? item.date)
-          && normalize(event.title) === normalize(title));
+          && (normalize(event.title) === normalize(title)
+            || (similarVenue(event.venueName,venue) && similarTitle(event.title,title))));
         const candidates = comparison.map(event => ({
-          time:localTime.format(event.startsAt.toDate()), venue:event.venueName ?? null
+          title:event.title, time:localTime.format(event.startsAt.toDate()), venue:event.venueName ?? null
         }));
         const sameSlot = candidates.some(event => event.time === time && venue
-          && normalize(event.venue) === normalize(venue));
+          && normalize(event.title) === normalize(title) && similarVenue(event.venue,venue));
         const startsAt = date && time && toLocalTimestamp(date,time);
         const result = !startsAt || !venue || !title ? 'uppgifter saknas'
           : sameSlot ? 'möjlig dublett'
-          : candidates.length ? 'granska tid eller lokal' : 'ny kandidat';
+          : candidates.length ? 'granska titelvariant, tid eller lokal' : 'ny kandidat';
         const category = classify(title,venue);
         const own = existing.find(event => event.id === id);
         if (own && own.source === 'tickster') {
