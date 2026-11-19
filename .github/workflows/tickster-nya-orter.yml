@@ -1,0 +1,22 @@
+name: Testa Tickster i fler kommuner
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: tickster-import
+  cancel-in-progress: false
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - run: node tickster-nya-orter.js
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
