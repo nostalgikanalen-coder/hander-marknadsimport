@@ -1,7 +1,7 @@
 import {cert, initializeApp} from 'firebase-admin/app';
 import {getFirestore, Timestamp} from 'firebase-admin/firestore';
 
-const towns = ['Norrköping','Linköping','Motala','Mjölby'];
+const towns = ['Norrköping','Linköping','Motala','Mjölby','Finspång','Söderköping','Vadstena'];
 const base = 'https://www.tickster.com';
 const day = new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm'});
 const localTime = new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
@@ -45,14 +45,18 @@ function isCinemaScreening(title, venue) {
     || /\bbio(?:graf)?\b/iu.test(venue);
 }
 
-function classify(title, venue) {
+function classify(title, venue, description = '') {
   const name = normalize(title);
+  const details = normalize(description);
   if (/\b(julmarknad|julmarknader)\b/.test(name)) return 'julmarknad';
+  if (/dryckesfestival/.test(name) || (/julfest/.test(name) && /julbord/.test(details))) return 'mat';
   if (/\b(loppis|bakluckeloppis)\b/.test(name)) return 'loppis';
-  if (/\b(standup|teater|musikal|workshop|utställning|mässa|retromania|filmfestival)\b/.test(name)) return 'kultur';
+  if (/\b(standup|teater|musikal|workshop|utställning|mässa|retromania|filmfestival|dansakademiens)\b/.test(name)) return 'kultur';
   if (/\bteater\b/.test(normalize(venue))) return 'kultur';
   if (/^(dungen)$/.test(name) || /\b(konsert|live|tribute|rock|punk fest|jazz)\b/.test(name)
       || /\b(platens bar|palatset|bomber bar|arbis)\b/.test(normalize(venue))) return 'musik';
+  if (/tributefest/.test(name) || /stående konsert|sommarturné|konsert med/.test(details)) return 'musik';
+  if (/är musikalen|en föreställning från teaterprofilen/.test(details)) return 'kultur';
   return 'annat';
 }
 const changes = new Map();
@@ -68,12 +72,27 @@ const toLocalTimestamp = (date,time) => {
 
 for (const town of towns) {
   try {
-    const html = await read(base+'/se/sv/events/in/'+encodeURIComponent(town.toLowerCase()));
+    const cityUrl = new URL('/se/sv/events/in/'+encodeURIComponent(town.toLowerCase()),base);
     const links = new Map();
-    for (const [,path,date,label] of html.matchAll(/href=["'](?:https:\/\/www\.tickster\.com)?(\/se\/sv\/events\/[a-z0-9]+\/(\d{4}-\d{2}-\d{2})\/[^"'?#]+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-      if (date >= today) links.set(path,{date,title:plain(label)});
+    const visited = new Set();
+    let pageUrl = cityUrl.href;
+    let pages = 0;
+    while (pageUrl && pages < (['Finspång','Söderköping','Vadstena'].includes(town) ? 3 : 1) && !visited.has(pageUrl)) {
+      visited.add(pageUrl);
+      const html = await read(pageUrl);
+      pages++;
+      for (const [,path,date,label] of html.matchAll(/href=["'](?:https:\/\/www\.tickster\.com)?(\/se\/sv\/events\/[a-z0-9]+\/(\d{4}-\d{2}-\d{2})\/[^"'?#]+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+        if (date >= today) links.set(path,{date,title:plain(label)});
+      }
+      let next;
+      for (const [,href,label] of html.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+        if (plain(label).toLowerCase() !== 'nästa sida') continue;
+        const url = new URL(href.replace(/&amp;/g,'&'),pageUrl);
+        if (url.origin === base && url.pathname === cityUrl.pathname) next = url.href;
+      }
+      pageUrl = next;
     }
-    console.log(town, links.size,'kommande länkar på första sidan.');
+    console.log(town,links.size,'kommande länkar från',pages,'sidor.');
     for (const current of existing) {
       if (current.source !== 'tickster' || current.municipality !== town || !current.sourceUrl) continue;
       try {
@@ -127,7 +146,7 @@ for (const town of towns) {
         const result = !startsAt || !venue || !title ? 'uppgifter saknas'
           : sameSlot ? 'möjlig dublett'
           : candidates.length ? 'granska titelvariant, tid eller lokal' : 'ny kandidat';
-        const category = classify(title,venue);
+        const category = classify(title,venue,text);
         const own = existing.find(event => event.id === id);
         if (own && own.source === 'tickster') {
           if (cancelled) changes.set(id,{cancelled:true});
