@@ -54,14 +54,24 @@ function startDate(label, time, url, christmas) {
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-export function parseEvent(html, url, tags, now = new Date(), christmas = false) {
+const knownLocalVenues=[{name:'Matteus kyrka',municipality:'Norrköping',address:'Slottsgatan 157'}];
+const normalizeVenue = value => String(value || '').normalize('NFC').toLocaleLowerCase('sv').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
+function verifiedLocalVenue(name,address,registry) {
+  if (!address) return false;
+  const key=normalizeVenue(name),street=normalizeVenue(address);
+  return [...knownLocalVenues,...registry].some(place=>place.municipality==='Norrköping'
+    && [place.name,...(place.aliases || [])].some(n=>normalizeVenue(n)===key)
+    && place.address && (normalizeVenue(place.address)===street || normalizeVenue(place.address).startsWith(street+' ') || street.startsWith(normalizeVenue(place.address)+' ')));
+}
+
+export function parseEvent(html, url, tags, now = new Date(), christmas = false, registry = []) {
   const title = plain(html.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1]);
   if (!title || /\b(inställt|inställd|uppskjutet|uppskjuten)\b/i.test(title)) return [];
   const address = plain(html.match(/vn-object-page__information-box-metadata-address[^>]*><\/span>Adress<\/div>\s*<div[^>]*>([\s\S]*?)<\/div>/)?.[1]);
   const slug = new URL(url).pathname.split('/').at(-1);
   const hemgarden = christmas && slug === 'julmarknad-pa-hemgarden-' && /^saltängsgatan 7$/i.test(address);
-  if (!hemgarden && !/(?:^|[^\p{L}])(?:norrköping|kolmården|krokek|vikbolandet|skärblacka|kimstad|norsholm|svärtinge|åby|ljunga|östra husby)(?!\p{L})/iu.test(address)
-    && !/\b60[1-6]\s?\d{2}\b/.test(address)) return [];
+  const addressIsLocal = hemgarden || /(?:^|[^\p{L}])(?:norrköping|kolmården|krokek|vikbolandet|skärblacka|kimstad|norsholm|svärtinge|åby|ljunga|östra husby)(?!\p{L})/iu.test(address)
+    || /\b60[1-6]\s?\d{2}\b/.test(address);
   const categories = [[/loppis|marknad/i,'loppis'],[/musik/i,'musik'],[/familj/i,'familj'],
     [/sport|idrott/i,'sport'],[/mat/i,'mat'],[/teater|konst|museum|utställning|föreläsning/i,'kultur']];
   const category = christmas || /julmarknad/i.test(title) ? 'julmarknad' : categories.find(([pattern]) => pattern.test(tags))?.[1] ?? 'annat';
@@ -70,6 +80,7 @@ export function parseEvent(html, url, tags, now = new Date(), christmas = false)
   for (const occasion of occasions) {
     const label = plain(occasion.match(/vn-object-page__occasion-item-left">([\s\S]*?)<\/div>/)?.[1]);
     const venueName = plain(occasion.match(/Plats:<\/span>([\s\S]*?)<\/div>/)?.[1]);
+    if (!addressIsLocal && !verifiedLocalVenue(venueName,address,registry)) continue;
     const time = plain(occasion.match(/Tid:<\/span>([\s\S]*?)<\/div>/)?.[1]);
     const range = christmas && dailyMarkets.has(slug)
       ? label.match(/^(\d{1,2})\s*[–—-]\s*(\d{1,2})\s+([a-z]{3})(?:\s+(20\d{2}))?$/i)
@@ -81,7 +92,7 @@ export function parseEvent(html, url, tags, now = new Date(), christmas = false)
       const startsAt = startDate(day,time,url,christmas);
       if (!venueName || !startsAt || startsAt < now) continue;
       const id = 'visit-norrkoping-' + createHash('sha256').update(url + '|' + startsAt.toISOString()).digest('hex').slice(0,32);
-      events.set(id,{id,title,startsAt,venueName,municipality:'Norrköping',category,source:'visit-norrkoping',sourceUrl:url});
+      events.set(id,{id,title,startsAt,venueName,address,municipality:'Norrköping',category,source:'visit-norrkoping',sourceUrl:url});
     }
   }
   return [...events.values()];
@@ -100,10 +111,10 @@ export function christmasMarketLinks(html) {
   return result;
 }
 
-export async function upcomingVisitEvents(now = new Date(), request = fetch) {
+export async function upcomingVisitEvents(now = new Date(), request = fetch, registry = []) {
   const read = url => fetchCalendar(url,request);
   const links = new Map();
-  const maxPages = 6;
+  const maxPages = 18;
   for (let page=1; page<=maxPages; page++) {
     let html;
     try {
@@ -118,7 +129,9 @@ export async function upcomingVisitEvents(now = new Date(), request = fetch) {
       if (page === 1) throw new Error('Visit Norrköpings kalenderformat kunde inte läsas.');
       break;
     }
+    const before=links.size;
     for (const [url,tags] of results) links.set(url,tags);
+    if (links.size===before) break;
   }
   let christmas = new Set();
   if (now < christmasCutoff) {
@@ -134,7 +147,7 @@ export async function upcomingVisitEvents(now = new Date(), request = fetch) {
   let failed = 0;
   const parallelRequests = 5;
   for (let i=0; i<entries.length; i+=parallelRequests) {
-    const results = await Promise.allSettled(entries.slice(i,i+parallelRequests).map(async ([url,tags]) => parseEvent(await read(url),url,tags,now,christmas.has(url))));
+    const results = await Promise.allSettled(entries.slice(i,i+parallelRequests).map(async ([url,tags]) => parseEvent(await read(url),url,tags,now,christmas.has(url),registry)));
     for (const result of results) {
       if (result.status === 'fulfilled') events.push(...result.value);
       else failed++;
@@ -142,5 +155,6 @@ export async function upcomingVisitEvents(now = new Date(), request = fetch) {
   }
   if (failed) console.warn('Visit Norrköping: sidor som inte kunde läsas:',failed);
   if (failed === entries.length) throw new Error('Evenemangssidorna kunde inte hämtas.');
+  console.log('Visit Norrköping: kontrollerade',entries.length,'evenemangssidor.');
   return events;
 }

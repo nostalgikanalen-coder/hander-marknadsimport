@@ -16,10 +16,21 @@ import { upcomingVitaHomeGames } from './vita-hasten.js';
 import { upcomingLhcMatches } from './lhc.js';
 
 const now = new Date();
+let importDb;
+let venueRegistry=[];
+if (!process.argv.includes('--preview') && process.env.FIREBASE_SERVICE_ACCOUNT) {
+  const account=JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+  const projectId='hander-ostergotland';
+  if(account.project_id!==projectId)throw new Error('Tjänstkontot tillhör fel projekt.');
+  importDb=getFirestore(initializeApp({projectId,credential:cert(account)}));
+  try { venueRegistry=(await importDb.collection('venueRegistry').get()).docs.map(r=>r.data()); }
+  catch(error) { console.warn('Platsregistret kunde inte läsas för importen:',error.code || error.message); }
+}
+
 
 const sources = [
   ['Östgötamarknader', 'events', async () => upcomingMarkets(await readFeed(),now), 'ostgotamarknader'],
-  ['Visit Norrköping', 'events', upcomingVisitEvents, 'visit-norrkoping'],
+  ['Visit Norrköping', 'events', () => upcomingVisitEvents(now,fetch,venueRegistry), 'visit-norrkoping'],
   ['Second hand i Norrköping', 'places', secondhandPlaces, 'secondhand'],
   ['Julmarknader i Linköping', 'events', linkopingChristmasMarkets, 'linkoping-julmarknader'],
   ['Julmarknader i Östergötland', 'events', () => countyChristmasMarkets(now), 'ostergotland-julmarknader'],
@@ -93,10 +104,7 @@ if (process.argv.includes('--preview')) {
   console.table(records.map(({target,entry})=>({target,title:entry.title,startsAt:entry.startsAt,location:entry.venueName || entry.address,priceType:entry.priceType || '',priceAmount:entry.priceAmount ?? ''})));
 } else {
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) throw new Error('GitHub-hemligheten FIREBASE_SERVICE_ACCOUNT saknas.');
-  const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  const projectId = 'hander-ostergotland';
-  if (account.project_id !== projectId) throw new Error('Tjänstkontot tillhör fel projekt.');
-  const db = getFirestore(initializeApp({projectId,credential:cert(account)}));
+  const db = importDb;
   try {
     if (records.some(({entry}) => entry.category === 'julmarknad')) {
       const category = await resolveChristmasCategory(db);
