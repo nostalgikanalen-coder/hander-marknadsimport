@@ -1,5 +1,6 @@
+import {extractPrice} from './event-prices.js';
 import {cert, initializeApp} from 'firebase-admin/app';
-import {getFirestore, Timestamp} from 'firebase-admin/firestore';
+import {getFirestore, Timestamp, FieldValue} from 'firebase-admin/firestore';
 
 const towns = ['Norrköping','Linköping','Motala','Mjölby','Finspång','Söderköping','Vadstena'];
 const base = 'https://www.tickster.com';
@@ -147,18 +148,20 @@ for (const town of towns) {
           : sameSlot ? 'möjlig dublett'
           : candidates.length ? 'granska titelvariant, tid eller lokal' : 'ny kandidat';
         const category = classify(title,venue,text);
+        const price = startsAt ? extractPrice(html,{title,startsAt,sourceUrl:base+path}) : {};
+        if (price.priceType) price.priceSourceUrl=base+path;
         const own = existing.find(event => event.id === id);
         if (own && own.source === 'tickster') {
           if (cancelled) changes.set(id,{cancelled:true});
-          else if (startsAt && title && venue) changes.set(id,{title,startsAt,venueName:venue,sourceUrl:base+path,
+          else if (startsAt && title && venue) changes.set(id,{title,startsAt,venueName:venue,sourceUrl:base+path,...price,
             ...(own.category === 'annat' && category !== 'annat' ? {category} : {})});
         }
         if (result === 'ny kandidat' && !own) {
           planned.set(id,{title,municipality:town,venueName:venue,startsAt,
-            category,cancelled,source:'tickster',sourceUrl:base+path});
+            category,cancelled,source:'tickster',sourceUrl:base+path,...price});
         }
         console.log(JSON.stringify({town,title,date:date ?? item.date,time:time ?? null,venue:venue || null,
-          url:base+path,category,cancelled,
+          url:base+path,category,cancelled,priceType:price.priceType || null,priceAmount:price.priceAmount ?? null,
           result:own ? (own.importLocked || own.hidden ? 'skyddad post' : cancelled ? 'inställt – markeras' : 'befintlig Tickster-post') : cancelled ? 'ny kandidat – inställt' : result,candidates}));
       } catch(error) {
         if ([404,410].includes(error.status)) {
@@ -201,7 +204,7 @@ if (apply && !process.exitCode) {
       const id = ids[index];
       const current = snapshot.data();
       if (!snapshot.exists && planned.has(id)) {
-        transaction.create(refs[index],planned.get(id));
+        transaction.create(refs[index],{...planned.get(id),createdAt:FieldValue.serverTimestamp(),updatedAt:FieldValue.serverTimestamp()});
         result.added++;
       } else if (current?.source === 'tickster' && changes.has(id)) {
         if (current.hidden || current.importLocked) { result.protected++; return; }
@@ -213,7 +216,7 @@ if (apply && !process.exitCode) {
         }
         const updated = different(current,patch);
         if (!Object.keys(updated).length) return;
-        transaction.update(refs[index],updated);
+        transaction.update(refs[index],{...updated,updatedAt:FieldValue.serverTimestamp()});
         if (updated.cancelled === true) result.hidden++;
         else result.updated++;
       }

@@ -1,3 +1,4 @@
+import {enrichPrices} from './event-prices.js';
 import { upcomingMotalaEvents } from './motala.js';
 import { upcomingLinkopingEvents } from './visit-linkoping.js';
 import { cert, initializeApp } from 'firebase-admin/app';
@@ -86,8 +87,10 @@ async function writeImportStatus(db, writeFailed = false) {
   await batch.commit();
 }
 
+await enrichPrices(records);
+
 if (process.argv.includes('--preview')) {
-  console.table(records.map(({target,entry})=>({target,title:entry.title,startsAt:entry.startsAt,location:entry.venueName || entry.address})));
+  console.table(records.map(({target,entry})=>({target,title:entry.title,startsAt:entry.startsAt,location:entry.venueName || entry.address,priceType:entry.priceType || '',priceAmount:entry.priceAmount ?? ''})));
 } else {
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) throw new Error('GitHub-hemligheten FIREBASE_SERVICE_ACCOUNT saknas.');
   const account = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -160,7 +163,9 @@ if (process.argv.includes('--preview')) {
             outcomes.push({target,sourceIndex,kind:'skipped'});
             continue;
           }
-          transaction.set(references[index],{...entry,updatedAt:FieldValue.serverTimestamp()},{merge:true});
+          transaction.set(references[index],{...entry,
+            ...(!existing[index].exists ? {createdAt:FieldValue.serverTimestamp()} : {}),
+            updatedAt:FieldValue.serverTimestamp()},{merge:true});
           outcomes.push({target,sourceIndex,kind:existing[index].exists ? 'updated' : 'added'});
         }
         return outcomes;

@@ -1,3 +1,4 @@
+import {rememberPricePage} from './event-prices.js';
 const calendar = 'https://www.arbis.se/kalender';
 const zone = 'Europe/Stockholm';
 const localDay = new Intl.DateTimeFormat('sv-SE',{timeZone:zone});
@@ -55,7 +56,7 @@ export async function upcomingArbisConcerts(now = new Date(), request = fetch) {
   async function read(url) {
     const response = await request(url,{signal:AbortSignal.timeout(12000)});
     if (!response.ok) throw new Error('Arbis svarade med HTTP '+response.status);
-    return response.text();
+    const html=await response.text();rememberPricePage(url,html);return html;
   }
   const cards = arbisCalendarCards(await read(calendar));
   if (!cards.length) throw new Error('Arbis kalenderformat kunde inte läsas.');

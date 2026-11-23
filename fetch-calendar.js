@@ -1,3 +1,4 @@
+import {rememberPricePage} from './event-prices.js';
 import { setTimeout as pause } from 'node:timers/promises';
 
 const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
@@ -24,7 +25,7 @@ export async function fetchCalendar(url, request = fetch, options = {}) {
           'Accept-Language': 'sv-SE,sv;q=0.9,en;q=0.5'
         }
       });
-      if (response.ok) return await response.text();
+      if (response.ok) { const html=await response.text(); rememberPricePage(url,html); return html; }
       // Release unsuccessful responses before retrying.
       await response.body?.cancel();
       const error = Object.assign(new Error('HTTP ' + response.status), {

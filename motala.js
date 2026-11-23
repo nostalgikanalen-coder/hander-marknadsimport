@@ -1,3 +1,4 @@
+import {apiCost} from './event-prices.js';
 import { fetchCalendar } from './fetch-calendar.js';
 
 const endpoint = 'https://motalasjostad.se/wp-json/tribe/events/v1/events';
@@ -26,7 +27,7 @@ export async function upcomingMotalaEvents(now = new Date(), request = fetch) {
         : /musik/.test(tags) ? 'musik' : /loppis|marknad/.test(tags) ? 'loppis' : 'annat';
       rows.set(event.id,{
         id:'motala-sjostad-'+event.id,title,startsAt,venueName,municipality:'Motala',
-        category,source:'motala-sjostad',sourceUrl:event.url
+        category,source:'motala-sjostad',sourceUrl:event.url, ...apiCost(event.cost)
       });
     }
     if (page >= Number(data.total_pages) || !data.events.length) break;
