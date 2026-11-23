@@ -1,6 +1,7 @@
 import { fetchCalendar } from './fetch-calendar.js';
 const gamlaLinkoping = 'https://gamlalinkoping.se/evenemang/gamlalinkopingsjulmarknad.4.58068221a0421405eca0e.html';
 const hemslojden = 'https://www.linkoping.se/uppleva-och-gora/evenemang-i-linkoping/evenemangskalender/evenemangskalender/2026-10-29-julmarknad-pa-hemslojden';
+const craftOrganiser = 'https://www.hemslojdeniostergotland.se/aktuellt/julmarknad-pa-hemslojden-2026';
 const ekenas = 'https://svenska-slottsmassor.se/vara-massor/jul-pa-ekenas-slott/';
 const localDay = new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm'});
 const weekday = new Intl.DateTimeFormat('sv-SE',{timeZone:'UTC',weekday:'long'});
@@ -26,6 +27,21 @@ function craftMarket(html) {
     throw new Error('Hemslöjdens datum kunde inte läsas.');
   }
   return [market('hemslojden','Julmarknad på Hemslöjden','Hemslöjdsgården, Läroverksgatan 7',hemslojden,startsAt)];
+}
+
+function organiserCraftMarket(html) {
+  const content = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi,' ')
+    .replace(/<[^>]+>/g,' ').replace(/&nbsp;|&#160;|&#xA0;/gi,' ').replace(/\s+/g,' ');
+  const date = content.match(/När:\s*(\d{1,2})\s+(november|december)\s+(2026)\b/i);
+  const time = content.match(/Tid:\s*(\d{1,2})(?:[:.](\d{2}))?\s*[-–—]\s*\d{1,2}/i);
+  if (!/Julmarknad på Hemslöjden/i.test(content) || !date || !time) {
+    throw new Error('Arrangörens julmarknadsdatum och tid kunde inte verifieras.');
+  }
+  const day = date[3]+'-'+(date[2].toLowerCase()==='november'?'11':'12')+'-'+date[1].padStart(2,'0');
+  const hour=Number(time[1]), minute=Number(time[2] || 0);
+  const startsAt=novemberStart(day,String(hour).padStart(2,'0')+':'+String(minute).padStart(2,'0'));
+  if (hour>23 || minute>59 || !Number.isFinite(+startsAt) || localDay.format(startsAt)!==day) throw new Error('Ogiltigt datum hos arrangören.');
+  return [market('hemslojden','Julmarknad på Hemslöjden','Hemslöjdsgården, Läroverksgatan 7',craftOrganiser,startsAt)];
 }
 
 function castleMarket(html) {
@@ -61,7 +77,19 @@ export async function linkopingChristmasMarkets(now = new Date(), request = fetc
   const sources = [[hemslojden,craftMarket]];
   if (today <= '2026-11-15') sources.push([ekenas,castleMarket]);
   const results = await Promise.allSettled(sources.map(async ([url,parse])=>{
-    return parse(await fetchCalendar(url,request));
+    try {
+      return parse(await fetchCalendar(url,request));
+    } catch (error) {
+      if (url !== hemslojden) throw error;
+      console.warn('Hemslöjden: kommunsidan kunde inte läsas. Provar arrangörens sida.');
+      try {
+        const rows=organiserCraftMarket(await fetchCalendar(craftOrganiser,request));
+        console.log('Hemslöjden: datum och tid hämtade från arrangörens sida.');
+        return rows;
+      } catch (fallbackError) {
+        throw new Error(error.message+'; reservkälla: '+fallbackError.message);
+      }
+    }
   }));
   const rows = [...museum];
   for (const result of results) {
