@@ -1,4 +1,4 @@
-import {extractPrice} from './event-prices.js';
+import {extractPrice,rememberPricePage,enrichPrices} from './event-prices.js';
 import {cert, initializeApp} from 'firebase-admin/app';
 import {getFirestore, Timestamp, FieldValue} from 'firebase-admin/firestore';
 
@@ -15,7 +15,7 @@ const plain = html => html.replace(/<[^>]*>/g,' ').replace(/&#(\d+);/g,(_,n)=>St
 async function read(url) {
   const response = await fetch(url,{signal:AbortSignal.timeout(12000)});
   if (!response.ok) throw Object.assign(new Error('HTTP '+response.status), {status:response.status});
-  return response.text();
+  const html=await response.text();rememberPricePage(url,html);return html;
 }
 
 const apply = process.argv.includes('--apply');
@@ -176,6 +176,18 @@ for (const town of towns) {
     console.error(town,error.message);
     process.exitCode = 1;
   }
+}
+
+const priceRecords=[...planned.values()].map(entry=>({target:'events',entry}));
+for (const [id,patch] of changes) {
+  const current=existing.find(event=>event.id===id);
+  if(current && !current.hidden && !current.importLocked)priceRecords.push({target:'events',entry:{...current,...patch,id}});
+}
+await enrichPrices(priceRecords);
+for(const {entry} of priceRecords){
+  if(!entry.priceType)continue;
+  console.log('Verifierat pris:',JSON.stringify({title:entry.title,priceType:entry.priceType,priceAmount:entry.priceAmount,source:entry.priceSourceUrl}));
+  if(changes.has(entry.id))changes.set(entry.id,{...changes.get(entry.id),priceType:entry.priceType,priceAmount:entry.priceAmount,priceSourceUrl:entry.priceSourceUrl || entry.sourceUrl});
 }
 
 function different(current, patch) {

@@ -21,7 +21,7 @@ function result(values,from=false) {
 export function apiCost(cost) {
   const text=plain(cost);
   if (/^(gratis|fri entré|kostnadsfritt)$/iu.test(text)) return {priceType:'free',priceAmount:null};
-  const match=text.match(/^(från\s+)?([\d ,.]+)\s*(?:kr|SEK)$/iu);
+  const match=text.match(/^(från\s*:?\s*)?([\d ,.]+)\s*(?:kr|SEK|:-)$/iu);
   return match ? result([amount(match[2].trim())],Boolean(match[1])) : {};
 }
 function stamp(value) { return value?.toDate ? value.toDate() : new Date(value); }
@@ -76,10 +76,16 @@ export function extractPrice(html,event) {
   if(!content.includes(iso)&&!new RegExp('\\b'+Number(d)+'\\s+'+months[Number(m)-1]+'\\s+'+y+'\\b','iu').test(plain(content)))return {};
   const lines=content.replace(/<\/(?:p|div|li|h[1-6]|section|tr)>|<br\s*\/?\s*>/gi,'\n').split('\n').map(plain).filter(Boolean);
   const candidates=[];
+  // The event's own ticket detail row (separate from recommendations and navigation).
+  for(const [,block] of content.matchAll(/<li\b[^>]*class=["'][^"']*\bticket\b[^"']*\bdetail\b[^"']*["'][^>]*>([\s\S]*?)<\/li>/gi)) {
+    const detail=block.match(/<span\b[^>]*class=["']detail-text[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1];
+    if(detail)candidates.push(apiCost(plain(detail)));
+  }
+  if(candidates.length) return candidates.every(x=>x.priceType && x.priceType===candidates[0].priceType && x.priceAmount===candidates[0].priceAmount)?candidates[0]:{};
   for(let index=0;index<lines.length;index++) {
     let line=lines[index];
-    if (/^(?:pris|entré|entrépris|biljettpris|kostnad)\s*:\s*$/iu.test(line)) line+=' '+(lines[index+1] || '');
-    const labelled=line.match(/^(?:pris|entré|entrépris|biljettpris|kostnad)\s*:\s*(.+)$/iu);
+    if (/^(?:pris|entré|entrépris|biljettpris|biljetter|kostnad)\s*:\s*$/iu.test(line)) line+=' '+(lines[index+1] || '');
+    const labelled=line.match(/^(?:pris|entré|entrépris|biljettpris|biljetter|kostnad)(?:\s*:\s*|\s+)(.+)$/iu);
     if(labelled)candidates.push(apiCost(labelled[1]));
     else if(/^(?:fri entré|gratis inträde)$/iu.test(line))candidates.push({priceType:'free',priceAmount:null});
   }
@@ -97,28 +103,96 @@ export function rememberPricePage(url,html) {
 }
 export function rememberedPrice(url,event) {const html=pages.get(String(url));return html===undefined?null:extractPrice(html,event);}
 const allowed=new Set(['www.arbis.se','arbis.se','visit.norrkoping.se','visitlinkoping.se','www.linkoping.se','motalasjostad.se','www.julmarknad.nu','www.hemslojdeniostergotland.se','www.brunnebymusteri.se','vadstenaslott.com','www.soderkoping.se']);
-export async function enrichPrices(records,{request=fetch,maxRequests=12,concurrency=3}={}) {
-  const jobs=new Map();let verified=0,failed=0,extra=0;
-  for(const {target,entry} of records) {
-    if(target!=='events')continue;
+const ticketHosts=new Set(['www.tickster.com','tickster.com','www.nortic.se','nortic.se','tickets.nortic.se','www.ticketmaster.se','ticketmaster.se']);
+export function ticketUrl(value,base) {
+  try {
+    const url=new URL(String(value).replace(/&amp;/g,'&'),base);
+    if(url.protocol!=='https:' || url.username || url.password || (url.port && url.port!=='443') || !ticketHosts.has(url.hostname))return '';
+    const paths=url.hostname.includes('tickster') ? /^\/se\/sv\/events\/[^/]+\/\d{4}-\d{2}-\d{2}\//i
+      : url.hostname.includes('ticketmaster') ? /^\/event\/[^/]+/i : /\/(?:ticket\/event|event|dagny\/event)\/[^/]+/i;
+    if(!paths.test(url.pathname))return '';
+    url.hash='';return url.href;
+  }catch{return '';}
+}
+export function ticketLinks(html,event) {
+  // This only discovers links. Each destination must independently match title and date.
+  const main=html.match(/<main\b[^>]*>([\s\S]*?)<\/main>/i)?.[1]??html;
+  const h1=main.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+  if(normal(h1)!==normal(event.title))return [];
+  const result=new Set();
+  for(const [,href,label] of main.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    if(!/biljett|tickets|boka|köp/iu.test(plain(label)))continue;
+    const url=ticketUrl(href,event.sourceUrl);if(url)result.add(url);
+  }
+  return [...result].slice(0,3);
+}
+function acceptedUrl(value) {
+  try {const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&(!url.port||url.port==='443')&&(allowed.has(url.hostname)||Boolean(ticketUrl(value)));}catch{return false;}
+}
+async function readLimited(response) {
+  if(Number(response.headers?.get('content-length'))>2000000)throw new Error('Prissidan är för stor');
+  const reader=response.body?.getReader();if(!reader)return response.text();
+  const chunks=[];let length=0;
+  for(;;){const {done,value}=await reader.read();if(done)break;length+=value.length;if(length>2000000){await reader.cancel();throw new Error('Prissidan är för stor');}chunks.push(value);}
+  const decoder=new TextDecoder();return chunks.map(chunk=>decoder.decode(chunk,{stream:true})).join('')+decoder.decode();
+}
+export async function enrichPrices(records,{request=fetch,maxRequests=30,concurrency=3}={}) {
+  const jobs=new Map();let verified=0,failed=0,extra=0,viaTickets=0,unconfirmed=0;
+  const inFlight=new Map();
+  async function read(url) {
+    if(pages.has(url))return {html:pages.get(url),url};
+    if(inFlight.has(url))return inFlight.get(url);
+    const promise=(async()=>{
+      let current=url;
+      for(let redirect=0;redirect<3;redirect++){
+        if(!acceptedUrl(current)||extra>=maxRequests)return null;
+        extra++;
+        const response=await request(current,{signal:AbortSignal.timeout(7000),redirect:'manual',headers:{'User-Agent':'UtIOst-EventImporter/1.0 (+https://utiost.se)','Accept':'text/html'}});
+        if([301,302,303,307,308].includes(response.status)){
+          const location=response.headers.get('location');await response.body?.cancel();
+          if(!location)throw new Error('Omdirigering saknar adress');
+          const next=new URL(location,current).href;
+          // Redirects may only stay on the original host or enter an approved ticket event URL.
+          if(new URL(next).hostname!==new URL(current).hostname&&!ticketUrl(next))return null;
+          current=next;continue;
+        }
+        if(!response.ok){await response.body?.cancel();throw new Error('HTTP '+response.status);}
+        const html=await readLimited(response);rememberPricePage(current,html);return {html,url:current};
+      }
+      return null;
+    })().catch(()=>{failed++;return null;});
+    inFlight.set(url,promise);return promise;
+  }
+  for(const {target,entry} of records){
+    if(target!=='events'||!entry.title||!entry.startsAt)continue;
     if(entry.priceType){entry.priceSourceUrl ||= entry.sourceUrl;verified++;continue;}
-    const cached=rememberedPrice(entry.sourceUrl,entry);
-    if(cached!==null){if(cached.priceType){Object.assign(entry,cached,{priceSourceUrl:entry.sourceUrl});verified++;}continue;}
-    try {const url=new URL(entry.sourceUrl);if(url.protocol!=='https:'||!allowed.has(url.hostname))continue;}catch{continue;}
+    if(!acceptedUrl(entry.sourceUrl))continue;
     if(!jobs.has(entry.sourceUrl))jobs.set(entry.sourceUrl,[]);jobs.get(entry.sourceUrl).push(entry);
   }
-  // Rotate a bounded set daily so recurring runs cover more sources without long imports.
   const urls=[...jobs.keys()].sort();const offset=urls.length?(Math.floor(Date.now()/86400000)*maxRequests)%urls.length:0;
-  const selected=urls.slice(offset).concat(urls.slice(0,offset)).slice(0,maxRequests);
+  const rotated=urls.slice(offset).concat(urls.slice(0,offset));
+  // Start with already available pages, reserving the shared request budget for ticket links.
+  const selected=[...rotated.filter(url=>pages.has(url)),...rotated.filter(url=>!pages.has(url))];
   for(let i=0;i<selected.length;i+=concurrency)await Promise.all(selected.slice(i,i+concurrency).map(async url=>{
-    extra++;
-    try {
-      const response=await request(url,{signal:AbortSignal.timeout(7000),redirect:'error',headers:{'User-Agent':'UtIOst-EventImporter/1.0 (+https://utiost.se)','Accept':'text/html'}});
-      if(!response.ok){await response.body?.cancel();failed++;return;}
-      const html=await response.text();if(html.length>2000000){failed++;return;}
-      for(const entry of jobs.get(url)){const price=extractPrice(html,entry);if(price.priceType){Object.assign(entry,price,{priceSourceUrl:url});verified++;}}
-    }catch{failed++;}
+    const page=await read(url);
+    if(!page){unconfirmed+=jobs.get(url).length;return;}
+    for(const entry of jobs.get(url)){
+      let price=extractPrice(page.html,entry),priceSourceUrl=page.url;
+      if(!price.priceType){
+        const candidates=[];
+        for(const link of ticketLinks(page.html,entry)){
+          const ticket=await read(link);if(!ticket)continue;
+          const found=extractPrice(ticket.html,entry);
+          if(found.priceType)candidates.push({...found,url:ticket.url});
+        }
+        if(candidates.length&&candidates.every(p=>p.priceType===candidates[0].priceType&&p.priceAmount===candidates[0].priceAmount)){
+          price=candidates[0];priceSourceUrl=price.url;viaTickets++;
+        }
+      }
+      if(price.priceType){Object.assign(entry,{priceType:price.priceType,priceAmount:price.priceAmount,priceSourceUrl});verified++;}
+      else unconfirmed++;
+    }
   }));
-  console.log('Prisinhämtning:',verified,'verifierade priser ·',extra,'extra sidförfrågningar ·',failed,'kunde inte hämtas');
-  return {verified,extra,failed};
+  console.log('Prisinhämtning:',verified,'verifierade priser ·',viaTickets,'via biljettlänk ·',extra,'extra sidförfrågningar ·',failed,'hämtningsfel ·',unconfirmed,'utan säker prisuppgift');
+  return {verified,extra,failed,viaTickets,unconfirmed};
 }
