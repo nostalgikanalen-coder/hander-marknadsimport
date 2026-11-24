@@ -1,3 +1,4 @@
+import {upcomingGotaEvents} from './gotabiblioteken.js';
 import {upcomingLouisDeGeerEvents, upcomingArbetetsEvents, stockholmDate} from './wordpress-events.js';
 import {reconcileDirectSources, sameImportedFields} from './import-reconcile.js';
 import {enrichPrices} from './event-prices.js';
@@ -43,7 +44,8 @@ const sources = [
   ['Motala Sjöstad', 'events', () => upcomingMotalaEvents(now), 'motala-sjostad'],
   ['Linköping HC', 'events', () => upcomingLhcMatches(now), 'lhc'],
   ['Louis De Geer', 'events', () => upcomingLouisDeGeerEvents(now), 'louis-de-geer'],
-  ['Arbetets museum', 'events', () => upcomingArbetetsEvents(now), 'arbetets-museum']
+  ['Arbetets museum', 'events', () => upcomingArbetetsEvents(now), 'arbetets-museum'],
+  ['Götabiblioteken', 'events', () => upcomingGotaEvents(now), 'gotabiblioteken']
 ];
 const results = await Promise.allSettled(sources.map(async ([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
@@ -107,7 +109,7 @@ async function writeImportStatus(db, writeFailed = false) {
 
 // Check the new direct sources against existing entries before creating documents.
 // One daily query per set; never run these reads in the public website.
-if (records.some(({entry})=>['louis-de-geer','arbetets-museum'].includes(entry.source))) {
+if (records.some(({entry})=>['louis-de-geer','arbetets-museum','gotabiblioteken'].includes(entry.source))) {
   let existing=[];
   if(importDb) {
     const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm'}).format(now);
@@ -201,7 +203,7 @@ if (process.argv.includes('--preview')) {
             outcomes.push({target,sourceIndex,kind:'skipped'});
             continue;
           }
-          const directSource=['louis-de-geer','arbetets-museum'].includes(sources[sourceIndex][3]);
+          const directSource=['louis-de-geer','arbetets-museum','gotabiblioteken'].includes(sources[sourceIndex][3]);
           if(current && directSource && sameImportedFields(current,entry)) {
             outcomes.push({target,sourceIndex,kind:'skipped'});
             continue;

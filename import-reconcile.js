@@ -1,7 +1,7 @@
 // Match conservatively across sources, retaining the existing Firestore document ID.
 const day=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm'});
 const normal=value=>String(value??'').normalize('NFC').toLocaleLowerCase('sv').replace(/[^\p{L}\p{N}]+/gu,' ').trim();
-const direct=new Set(['louis-de-geer','arbetets-museum']);
+const direct=new Set(['louis-de-geer','arbetets-museum','gotabiblioteken']);
 function date(value) {return value?.toDate?value.toDate():new Date(value);}
 function place(value,registry) {
   const key=normal(value).replace(/ norrköping$/u,'');
