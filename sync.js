@@ -1,3 +1,5 @@
+import {upcomingLouisDeGeerEvents, upcomingArbetetsEvents, stockholmDate} from './wordpress-events.js';
+import {reconcileDirectSources, sameImportedFields} from './import-reconcile.js';
 import {enrichPrices} from './event-prices.js';
 import { upcomingMotalaEvents } from './motala.js';
 import { upcomingLinkopingEvents } from './visit-linkoping.js';
@@ -39,7 +41,9 @@ const sources = [
   ['Vita Hästen', 'events', () => upcomingVitaHomeGames(now), 'vita-hasten'],
   ['Visit Linköping', 'events', () => upcomingLinkopingEvents(now), 'visit-linkoping'],
   ['Motala Sjöstad', 'events', () => upcomingMotalaEvents(now), 'motala-sjostad'],
-  ['Linköping HC', 'events', () => upcomingLhcMatches(now), 'lhc']
+  ['Linköping HC', 'events', () => upcomingLhcMatches(now), 'lhc'],
+  ['Louis De Geer', 'events', () => upcomingLouisDeGeerEvents(now), 'louis-de-geer'],
+  ['Arbetets museum', 'events', () => upcomingArbetetsEvents(now), 'arbetets-museum']
 ];
 const results = await Promise.allSettled(sources.map(async ([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
@@ -53,7 +57,7 @@ console.log('Matchande IFK-dubbletter:',ifkDuplicates.size);
 const venueDuplicates = new Map([...arbisDuplicates,...ifkDuplicates]);
 for (const [id,primary] of venueDuplicates) duplicates.set(id,primary);
 const stats = sources.map(()=>({added:0,updated:0,skipped:0}));
-const records = results.flatMap((result,index) => {
+let records = results.flatMap((result,index) => {
   const [name,target] = sources[index];
   if (result.status === 'fulfilled') {
     console.log(name + ':', result.value.length, 'träffar');
@@ -101,6 +105,23 @@ async function writeImportStatus(db, writeFailed = false) {
   await batch.commit();
 }
 
+// Check the new direct sources against existing entries before creating documents.
+// One daily query per set; never run these reads in the public website.
+if (records.some(({entry})=>['louis-de-geer','arbetets-museum'].includes(entry.source))) {
+  let existing=[];
+  if(importDb) {
+    const today=new Intl.DateTimeFormat('sv-SE',{timeZone:'Europe/Stockholm'}).format(now);
+    const [future,exhibitions]=await Promise.all([
+      importDb.collection('events').where('startsAt','>=',stockholmDate(today)).get(),
+      importDb.collection('events').where('eventType','==','exhibition').get()
+    ]);
+    existing=[...new Map([...future.docs,...exhibitions.docs].map(doc=>[doc.id,{...doc.data(),id:doc.id}])).values()];
+  }
+  const reconciled=reconcileDirectSources(records,existing,venueRegistry);
+  records=reconciled.records;
+  console.log('Direktkällor: matchade befintliga:',reconciled.matched,'· skyddade/tvetydiga:',reconciled.protectedCount);
+}
+
 await enrichPrices(records);
 
 if (process.argv.includes('--preview')) {
@@ -114,6 +135,12 @@ if (process.argv.includes('--preview')) {
       for (const {entry} of records) {
         if (entry.category === 'julmarknad') entry.category = category;
       }
+    }
+    if(records.some(({entry})=>entry.category==='utstallning')) {
+      await db.runTransaction(async transaction=>{
+        const ref=db.collection('categories').doc('utstallning');
+        if(!(await transaction.get(ref)).exists)transaction.create(ref,{label:'Utställningar',scope:'events'});
+      });
     }
     const protectedEvents = new Set();
     if (venueDuplicates.size) {
@@ -171,6 +198,11 @@ if (process.argv.includes('--preview')) {
         for (const [index,{target,sourceIndex,entry:{id,...entry}}] of group.entries()) {
           const current = existing[index].data();
           if (current?.importLocked === true || current?.hidden === true) {
+            outcomes.push({target,sourceIndex,kind:'skipped'});
+            continue;
+          }
+          const directSource=['louis-de-geer','arbetets-museum'].includes(sources[sourceIndex][3]);
+          if(current && directSource && sameImportedFields(current,entry)) {
             outcomes.push({target,sourceIndex,kind:'skipped'});
             continue;
           }
