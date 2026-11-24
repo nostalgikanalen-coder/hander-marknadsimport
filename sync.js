@@ -41,7 +41,7 @@ const sources = [
   ['Motala Sjöstad', 'events', () => upcomingMotalaEvents(now), 'motala-sjostad'],
   ['Linköping HC', 'events', () => upcomingLhcMatches(now), 'lhc']
 ];
-const results = await Promise.allSettled(sources.map(([,,load]) => load()));
+const results = await Promise.allSettled(sources.map(async ([,,load]) => load()));
 const duplicates = matchMarketDuplicates(results[0].value ?? [],results[1].value ?? []);
 console.log('Matchande loppisdubbletter:',duplicates.size);
 const arbisResult = results[sources.findIndex(([, , , id])=>id==='arbis')];
@@ -61,10 +61,13 @@ const records = results.flatMap((result,index) => {
     stats[index].skipped = result.value.length - accepted.length;
     return accepted.map(entry => ({target,entry,sourceIndex:index}));
   }
-  console.error(name + ':', result.reason.message);
-  process.exitCode = 1;
+  console.warn(`Varning: ${name} kunde inte läsas:`, result.reason?.message ?? result.reason);
   return [];
 });
+if (results.every(result => result.status === 'rejected')) {
+  console.error('Ingen importkälla kunde läsas.');
+  process.exitCode = 1;
+}
 async function resolveChristmasCategory(db) {
   const collection = db.collection('categories');
   const catalog = await collection.get();
